@@ -143,8 +143,52 @@ const route = useRoute()
 const router = useRouter()
 const library = useLibraryStore()
 
-const book = computed(() => library.getBook(route.params.id as string))
-const isSeries = computed(() => book.value?.kind === 'series')
+const libraryBook = computed(() => library.getBook(route.params.id as string))
+const chapterPath = computed<string | null>(() => {
+  const raw = route.query.chapterPath
+  if (typeof raw !== 'string' || !raw) return null
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return raw
+  }
+})
+const chapterTitle = computed<string | null>(() => {
+  const raw = route.query.chapterTitle
+  if (typeof raw !== 'string' || !raw) return null
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return raw
+  }
+})
+const fromSeriesId = computed<string | null>(() => {
+  const raw = route.query.fromSeries
+  return typeof raw === 'string' && raw ? raw : null
+})
+
+const target = computed(() => {
+  if (chapterPath.value) {
+    return {
+      path: chapterPath.value,
+      title: chapterTitle.value ?? '章节',
+      type: 'folder' as const,
+      kind: 'single' as const,
+      isChapter: true
+    }
+  }
+  const b = libraryBook.value
+  if (!b) return null
+  return {
+    path: b.path,
+    title: b.title,
+    type: b.type,
+    kind: b.kind,
+    isChapter: false
+  }
+})
+
+const isSeries = computed(() => target.value?.kind === 'series')
 
 const isLoading = ref(true)
 const isSaving = ref(false)
@@ -290,12 +334,12 @@ onUnmounted(cleanupDrag)
 
 // ─── 加载数据 ───
 onMounted(async () => {
-  if (!book.value) { router.push('/'); return }
-  editTitle.value = book.value.title
+  if (!target.value) { router.push('/'); return }
+  editTitle.value = target.value.title
   isLoading.value = true
   try {
     if (isSeries.value) {
-      const chapters = await window.electronAPI.getChapters(book.value.path)
+      const chapters = await window.electronAPI.getChapters(target.value.path)
       items.value = chapters.map((ch) => ({
         key: ch.title,
         name: ch.title,
@@ -303,7 +347,7 @@ onMounted(async () => {
         src: ch.cover ? `manga-file://${encodeURIComponent(ch.cover)}` : ''
       }))
     } else {
-      const pages = await window.electronAPI.getPages(book.value.path, book.value.type)
+      const pages = await window.electronAPI.getPages(target.value.path, target.value.type)
       items.value = pages.map((url) => {
         const noQuery = url.split('?')[0].split('#')[0]
         const decoded = decodeURIComponent(noQuery.replace('manga-file://', ''))
@@ -318,14 +362,14 @@ onMounted(async () => {
 
 // ─── 导入新话（系列） ───
 async function handleAddChapter(): Promise<void> {
-  if (!book.value) return
+  if (!target.value) return
   const folderPath = await window.electronAPI.openFolder()
   if (!folderPath) return
 
   isLoading.value = true
   try {
-    await window.electronAPI.importBook(folderPath, book.value.path)
-    const chapters = await window.electronAPI.getChapters(book.value.path)
+    await window.electronAPI.importBook(folderPath, target.value.path)
+    const chapters = await window.electronAPI.getChapters(target.value.path)
     items.value = chapters.map((ch) => ({
       key: ch.title,
       name: ch.title,
@@ -339,9 +383,9 @@ async function handleAddChapter(): Promise<void> {
 
 // ─── 保存 ───
 async function handleSave(): Promise<void> {
-  if (!book.value) return
+  if (!target.value) return
   isSaving.value = true
-  let bookPath = book.value.path
+  let bookPath = target.value.path
 
   try {
     // 若用户在拖拽结束瞬间点击保存，优先采用当前可视顺序，保证落盘顺序与界面一致
@@ -351,7 +395,7 @@ async function handleSave(): Promise<void> {
 
     // 1. 重命名书/系列目录
     const newTitle = editTitle.value.trim()
-    if (newTitle && newTitle !== book.value.title) {
+    if (newTitle && newTitle !== target.value.title) {
       const newPath = await window.electronAPI.renameBook(bookPath, newTitle)
       if (!newPath) { showToast('重命名失败，目标目录已存在', 'error'); return }
       bookPath = newPath
@@ -371,7 +415,7 @@ async function handleSave(): Promise<void> {
       const ok = await window.electronAPI.reorderChapters(bookPath, chapterNames)
       if (!ok) { showToast('话数重排失败', 'error'); return }
     } else {
-      if (book.value.type !== 'folder') {
+      if (target.value.type !== 'folder') {
         showToast('压缩包暂不支持重命名页文件，请先解压为文件夹再编辑', 'error')
         return
       }
@@ -399,6 +443,10 @@ function showToast(msg: string, type: 'success' | 'error'): void {
 }
 
 function goBack(): void {
+  if (fromSeriesId.value) {
+    router.push(`/series/${fromSeriesId.value}`)
+    return
+  }
   router.push(isSeries.value ? `/series/${route.params.id}` : '/')
 }
 </script>

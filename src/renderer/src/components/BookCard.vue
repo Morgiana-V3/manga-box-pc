@@ -1,12 +1,34 @@
 <template>
   <div
+    ref="cardRef"
     class="book-card"
     :class="{ 'has-progress': progress }"
-    @click="$emit('open', book)"
-    @contextmenu.prevent="showMenu = true"
+    @click="handleClick"
   >
     <!-- 封面图 -->
     <div class="cover-wrap">
+      <div class="card-menu-wrap">
+        <button class="card-menu-trigger" title="更多操作" @click.stop="toggleMenu">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/>
+          </svg>
+        </button>
+        <div v-if="showMenu" class="card-menu-pop" @click.stop>
+          <button class="card-menu-item" @click="onEdit">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
+              <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+            </svg>
+            编辑
+          </button>
+          <button class="card-menu-item danger" @click="onRemove">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="3,6 5,6 21,6"/><path d="M19,6v14a2,2,0,0,1-2,2H7a2,2,0,0,1-2-2V6M8,6V4a2,2,0,0,1,2-2h4a2,2,0,0,1,2,2v2"/>
+            </svg>
+            删除
+          </button>
+        </div>
+      </div>
       <img
         v-if="coverSrc"
         :src="coverSrc"
@@ -24,18 +46,21 @@
         </svg>
       </div>
 
-      <!-- 类型标签 -->
-      <div class="type-badge" :class="[book.type, book.kind]">
+      <!-- 类型标签（仅 Book 模式显示） -->
+      <div v-if="book" class="type-badge" :class="[book.type, book.kind]">
         {{ book.type === 'archive' ? 'ZIP' : book.kind === 'series' ? '系列' : 'DIR' }}
       </div>
+
+      <!-- 话数标签（仅 Chapter 模式显示） -->
+      <div v-if="chapter" class="chapter-num">第 {{ chapter.index + 1 }} 话</div>
 
       <!-- 进度条 -->
       <div v-if="progress" class="progress-bar">
         <div class="progress-fill" :style="{ width: progressPercent + '%' }" />
       </div>
 
-      <!-- 悬浮操作 -->
-      <div class="card-overlay">
+      <!-- 悬浮操作（仅 Book 模式显示） -->
+      <div v-if="book" class="card-overlay">
         <button class="overlay-btn read-btn">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
             <path d="M8 5v14l11-7z"/>
@@ -45,82 +70,131 @@
       </div>
     </div>
 
-    <!-- 书名 -->
+    <!-- 信息 -->
     <div class="card-info">
-      <p class="card-title" :title="book.title">{{ book.title }}</p>
-        <div class="card-meta">
-        <span class="page-count">
-          {{ book.kind === 'series' ? `${book.chapterCount ?? 0} 话` : `${book.pageCount} 页` }}
-        </span>
-        <span v-if="progress && book.kind !== 'series'" class="read-page">P.{{ progress.page + 1 }}</span>
+      <p class="card-title" :title="displayTitle">{{ displayTitle }}</p>
+      <div class="card-meta">
+        <span class="page-count">{{ metaText }}</span>
+        <span v-if="progress && (!book || book.kind !== 'series')" class="read-page">P.{{ progress.page + 1 }}</span>
       </div>
     </div>
 
-    <!-- 右键菜单 -->
-    <Teleport to="body">
-      <div v-if="showMenu" class="ctx-backdrop" @click="showMenu = false">
-        <div class="ctx-menu" :style="menuStyle" @click.stop>
-          <button class="ctx-item" @click="onOpen">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 5v14l11-7z"/></svg>
-            {{ book.kind === 'series' ? '查看系列' : '开始阅读' }}
-          </button>
-          <button class="ctx-item" @click="onEdit">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-            编辑
-          </button>
-          <div class="ctx-divider" />
-          <button class="ctx-item danger" @click="onRemove">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19,6v14a2,2,0,0,1-2,2H7a2,2,0,0,1-2-2V6M8,6V4a2,2,0,0,1,2-2h4a2,2,0,0,1,2,2v2"/></svg>
-            从书架移除
-          </button>
-        </div>
-      </div>
-    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useLibraryStore } from '../stores/library'
 
-const props = defineProps<{ book: Book }>()
+const props = defineProps<{
+  /** Book 模式（首页使用） */
+  book?: Book
+  /** Chapter 模式（系列内使用） */
+  chapter?: Chapter
+}>()
+
 const emit = defineEmits<{
   (e: 'open', book: Book): void
+  (e: 'open-chapter', chapter: Chapter): void
   (e: 'edit', book: Book): void
+  (e: 'edit-chapter', chapter: Chapter): void
   (e: 'remove', id: string): void
+  (e: 'remove-chapter', chapter: Chapter): void
 }>()
+
 const library = useLibraryStore()
+const cardRef = ref<HTMLElement | null>(null)
 const showMenu = ref<boolean>(false)
-const menuStyle = ref<Record<string, string>>({})
 const coverError = ref<boolean>(false)
 
-const progress = computed(() => library.getProgress(props.book.id))
+/** 统一获取 id，用于读取进度 */
+const itemId = computed(() => props.book?.id ?? props.chapter?.id ?? '')
+
+const progress = computed(() => library.getProgress(itemId.value))
 const progressPercent = computed(() => {
   if (!progress.value) return 0
   return Math.round(((progress.value.page + 1) / progress.value.total) * 100)
 })
 
+const displayTitle = computed(() => {
+  if (props.book) return props.book.title
+  if (props.chapter) return props.chapter.title
+  return ''
+})
+
+const metaText = computed(() => {
+  if (props.book) {
+    return props.book.kind === 'series'
+      ? `${props.book.chapterCount ?? 0} 话`
+      : `${props.book.pageCount} 页`
+  }
+  if (props.chapter) {
+    return `${props.chapter.pageCount} 页`
+  }
+  return ''
+})
+
 const coverSrc = computed(() => {
   if (coverError.value) return null
-  if (props.book.coverData) return props.book.coverData
-  if (props.book.cover) {
-    return `manga-file://${encodeURIComponent(props.book.cover)}?v=${library.assetVersion}`
+  if (props.book) {
+    if (props.book.coverData) return props.book.coverData
+    if (props.book.cover) {
+      return `manga-file://${encodeURIComponent(props.book.cover)}?v=${library.assetVersion}`
+    }
+  }
+  if (props.chapter) {
+    if (props.chapter.cover) {
+      return `manga-file://${encodeURIComponent(props.chapter.cover)}?v=${library.assetVersion}`
+    }
   }
   return null
 })
 
-function onOpen() {
-  showMenu.value = false
-  emit('open', props.book)
+function handleClick(): void {
+  if (props.book) {
+    emit('open', props.book)
+  } else if (props.chapter) {
+    emit('open-chapter', props.chapter)
+  }
 }
+
+function toggleMenu() {
+  showMenu.value = !showMenu.value
+}
+
 function onEdit() {
   showMenu.value = false
-  emit('edit', props.book)
+  if (props.book) {
+    emit('edit', props.book)
+  } else if (props.chapter) {
+    emit('edit-chapter', props.chapter)
+  }
 }
+
 function onRemove() {
   showMenu.value = false
-  emit('remove', props.book.id)
+  if (props.book) {
+    emit('remove', props.book.id)
+  } else if (props.chapter) {
+    emit('remove-chapter', props.chapter)
+  }
 }
+
+function onGlobalPointerDown(e: PointerEvent): void {
+  if (!showMenu.value) return
+  const target = e.target as Node | null
+  if (!target) return
+  if (!cardRef.value?.contains(target)) {
+    showMenu.value = false
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('pointerdown', onGlobalPointerDown)
+})
+onUnmounted(() => {
+  document.removeEventListener('pointerdown', onGlobalPointerDown)
+})
 </script>
 
 <style scoped lang="less">
@@ -147,6 +221,70 @@ function onRemove() {
 
   &:hover .card-overlay {
     opacity: 1;
+  }
+}
+
+.card-menu-wrap {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 3;
+}
+
+.card-menu-trigger {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  .flex-center();
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity @transition, background @transition;
+
+  &:hover {
+    background: rgba(124, 58, 237, 0.75);
+  }
+}
+
+.cover-wrap:hover .card-menu-trigger,
+.card-menu-trigger:focus-visible {
+  opacity: 1;
+}
+
+.card-menu-pop {
+  margin-top: 6px;
+  min-width: 120px;
+  background: @bg-card;
+  border: 1px solid @border;
+  border-radius: @radius-sm;
+  padding: 5px;
+  box-shadow: @shadow-card;
+}
+
+.card-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 7px 9px;
+  border: none;
+  background: transparent;
+  color: @text-primary;
+  border-radius: @radius-sm;
+  cursor: pointer;
+  font-size: 12px;
+
+  &:hover {
+    background: @bg-hover;
+  }
+
+  &.danger {
+    color: #fc8181;
+    &:hover {
+      background: rgba(252, 129, 129, 0.1);
+    }
   }
 }
 
@@ -261,62 +399,23 @@ function onRemove() {
   color: @accent-light;
 }
 
-// 右键菜单
-.ctx-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 9999;
-}
-
-.ctx-menu {
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  background: @bg-card;
-  border: 1px solid @border;
-  border-radius: @radius;
-  padding: 6px;
-  min-width: 150px;
-  box-shadow: @shadow-card;
-}
-
-.ctx-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 8px 12px;
-  background: transparent;
-  border: none;
-  color: @text-primary;
-  font-size: 13px;
-  border-radius: @radius-sm;
-  cursor: pointer;
-  transition: all @transition;
-
-  &:hover {
-    background: @bg-hover;
-  }
-
-  &.danger {
-    color: #fc8181;
-
-    &:hover {
-      background: rgba(252, 129, 129, 0.1);
-    }
-  }
-}
-
-.ctx-divider {
-  height: 1px;
-  background: @border;
-  margin: 4px 6px;
-}
-
 // 系列标签颜色
 .type-badge.series {
   background: rgba(34, 197, 94, 0.75);
   color: #fff;
+}
+
+// 话数标签（Chapter 模式）
+.chapter-num {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  background: linear-gradient(transparent, rgba(0,0,0,0.7));
+  color: #fff;
+  text-align: center;
 }
 </style>

@@ -28,29 +28,14 @@
 
     <!-- 章节网格 -->
     <div v-else class="chapter-grid">
-      <div
+      <BookCard
         v-for="ch in chapters"
         :key="ch.id"
-        class="chapter-card"
-        @click="readChapter(ch)"
-      >
-        <div class="chapter-cover">
-          <img
-            v-if="ch.cover"
-            :src="`manga-file://${encodeURIComponent(ch.cover)}`"
-            loading="lazy"
-            @error="(e) => ((e.target as HTMLImageElement).style.display='none')"
-          />
-          <div v-else class="cover-placeholder">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M4 19V5a2 2 0 012-2h12a2 2 0 012 2v14M4 19h14a2 2 0 010 4H4v-4z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-          </div>
-          <div class="chapter-num">第 {{ ch.index + 1 }} 话</div>
-        </div>
-        <div class="chapter-info">
-          <p class="chapter-title">{{ ch.title }}</p>
-          <span class="chapter-pages">{{ ch.pageCount }} 页</span>
-        </div>
-      </div>
+        :chapter="ch"
+        @open-chapter="readChapter"
+        @edit-chapter="editChapter"
+        @remove-chapter="removeChapter"
+      />
     </div>
   </div>
 </template>
@@ -59,6 +44,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useLibraryStore } from '../stores/library'
+import BookCard from '../components/BookCard.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -98,6 +84,24 @@ function goBack(): void {
 
 function goEdit(): void {
   router.push(`/edit/${route.params.id}`)
+}
+
+function editChapter(ch: Chapter): void {
+  const q = new URLSearchParams({
+    chapterPath: encodeURIComponent(ch.path),
+    chapterTitle: encodeURIComponent(ch.title),
+    fromSeries: String(route.params.id)
+  })
+  router.push(`/edit/${route.params.id}?${q.toString()}`)
+}
+
+async function removeChapter(ch: Chapter): Promise<void> {
+  const ok = window.confirm(`确认删除「${ch.title}」吗？`)
+  if (!ok) return
+  await window.electronAPI.removeBook(ch.path)
+  if (!book.value) return
+  chapters.value = await window.electronAPI.getChapters(book.value.path)
+  await library.refreshLibrary()
 }
 </script>
 
@@ -178,74 +182,5 @@ function goEdit(): void {
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: 20px;
   align-content: start;
-}
-
-.chapter-card {
-  .flex-col();
-  gap: 8px;
-  cursor: pointer;
-  border-radius: @radius;
-  transition: transform @transition;
-
-  &:hover {
-    transform: translateY(-3px);
-
-    .chapter-cover {
-      border-color: @border-accent;
-    }
-  }
-}
-
-.chapter-cover {
-  position: relative;
-  aspect-ratio: 2 / 3;
-  border-radius: @radius;
-  overflow: hidden;
-  background: @bg-card;
-  border: 1px solid @border;
-  transition: border-color @transition;
-
-  img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    display: block;
-  }
-}
-
-.cover-placeholder {
-  width: 100%;
-  height: 100%;
-  .flex-center();
-  color: @text-muted;
-}
-
-.chapter-num {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  padding: 4px 8px;
-  font-size: 10px;
-  font-weight: 600;
-  background: linear-gradient(transparent, rgba(0,0,0,0.7));
-  color: #fff;
-  text-align: center;
-}
-
-.chapter-info {
-  overflow: hidden;
-}
-
-.chapter-title {
-  font-size: 12px;
-  font-weight: 500;
-  color: @text-secondary;
-  .text-truncate();
-}
-
-.chapter-pages {
-  font-size: 11px;
-  color: @text-muted;
 }
 </style>
