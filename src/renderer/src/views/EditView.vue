@@ -303,9 +303,10 @@ onMounted(async () => {
         src: ch.cover ? `manga-file://${encodeURIComponent(ch.cover)}` : ''
       }))
     } else {
-      const pages = await window.electronAPI.getPages(book.value.path, 'folder')
+      const pages = await window.electronAPI.getPages(book.value.path, book.value.type)
       items.value = pages.map((url) => {
-        const decoded = decodeURIComponent(url.replace('manga-file://', ''))
+        const noQuery = url.split('?')[0].split('#')[0]
+        const decoded = decodeURIComponent(noQuery.replace('manga-file://', ''))
         const filename = decoded.replace(/\\/g, '/').split('/').pop() ?? decoded
         return { key: filename, name: filename, originalName: filename, src: url }
       })
@@ -343,6 +344,11 @@ async function handleSave(): Promise<void> {
   let bookPath = book.value.path
 
   try {
+    // 若用户在拖拽结束瞬间点击保存，优先采用当前可视顺序，保证落盘顺序与界面一致
+    const finalItems =
+      dragKey.value && insertIdx.value >= 0 ? renderItems.value.slice() : items.value.slice()
+    items.value = finalItems
+
     // 1. 重命名书/系列目录
     const newTitle = editTitle.value.trim()
     if (newTitle && newTitle !== book.value.title) {
@@ -353,7 +359,7 @@ async function handleSave(): Promise<void> {
 
     if (isSeries.value) {
       // 2a. 先重命名有变化的章节目录
-      for (const item of items.value) {
+      for (const item of finalItems) {
         if (item.name !== item.key) {
           const oldPath = `${bookPath}/${item.key}` // 简单拼接
           const newPath = await window.electronAPI.renameBook(oldPath, item.name)
@@ -361,12 +367,16 @@ async function handleSave(): Promise<void> {
         }
       }
       // 2b. 重排章节
-      const chapterNames = items.value.map((i) => i.key)
+      const chapterNames = finalItems.map((i) => i.key)
       const ok = await window.electronAPI.reorderChapters(bookPath, chapterNames)
       if (!ok) { showToast('话数重排失败', 'error'); return }
     } else {
+      if (book.value.type !== 'folder') {
+        showToast('压缩包暂不支持重命名页文件，请先解压为文件夹再编辑', 'error')
+        return
+      }
       // 2. 重排页面（重命名为 001, 002...）
-      const filenames = items.value.map((i) => i.key)
+      const filenames = finalItems.map((i) => i.src || i.key)
       const ok = await window.electronAPI.renamePages(bookPath, filenames)
       if (!ok) { showToast('页面重排失败', 'error'); return }
     }

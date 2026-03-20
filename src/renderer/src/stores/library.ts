@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 
 export const useLibraryStore = defineStore('library', () => {
   const books = ref<Book[]>([])
+  const assetVersion = ref<number>(Date.now())
   const readProgress = ref<Record<string, ReadProgress>>({})
   const libraryPath = ref<string>('')
   const isLoading = ref<boolean>(false)
@@ -58,6 +59,7 @@ export const useLibraryStore = defineStore('library', () => {
     try {
       const scanned = await window.electronAPI.scanLibrary(libraryPath.value)
       books.value = scanned
+      assetVersion.value = Date.now()
     } finally {
       isLoading.value = false
     }
@@ -90,6 +92,7 @@ export const useLibraryStore = defineStore('library', () => {
 
   return {
     books,
+    assetVersion,
     readProgress,
     libraryPath,
     isLoading,

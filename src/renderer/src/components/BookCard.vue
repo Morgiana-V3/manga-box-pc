@@ -103,7 +103,9 @@ const progressPercent = computed(() => {
 const coverSrc = computed(() => {
   if (coverError.value) return null
   if (props.book.coverData) return props.book.coverData
-  if (props.book.cover) return `manga-file://${encodeURIComponent(props.book.cover)}`
+  if (props.book.cover) {
+    return `manga-file://${encodeURIComponent(props.book.cover)}?v=${library.assetVersion}`
+  }
   return null
 })
 

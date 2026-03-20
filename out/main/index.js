@@ -35,8 +35,10 @@ electron.app.whenReady().then(() => {
   DEFAULT_LIBRARY_DIR = path.join(electron.app.getPath("userData"), "manga-library");
   fs.mkdirSync(DEFAULT_LIBRARY_DIR, { recursive: true });
   electron.protocol.registerFileProtocol("manga-file", (request, callback) => {
-    const url = decodeURIComponent(request.url.replace("manga-file://", ""));
-    callback({ path: url });
+    const raw = request.url.replace("manga-file://", "");
+    const noQuery = raw.split("?")[0].split("#")[0];
+    const filePath = decodeURIComponent(noQuery);
+    callback({ path: filePath });
   });
   createWindow();
   electron.app.on("activate", () => {
@@ -53,6 +55,34 @@ function getExt(filename) {
 }
 function naturalSort(a, b) {
   return a.localeCompare(b, void 0, { numeric: true, sensitivity: "base" });
+}
+function imagePathToDataUrl(filePath) {
+  try {
+    const ext = getExt(filePath);
+    const mime = ext === ".png" ? "image/png" : ext === ".webp" ? "image/webp" : ext === ".gif" ? "image/gif" : ext === ".bmp" ? "image/bmp" : "image/jpeg";
+    const data = fs.readFileSync(filePath).toString("base64");
+    return `data:${mime};base64,${data}`;
+  } catch {
+    return void 0;
+  }
+}
+function readChapterOrder(seriesPath) {
+  const orderFile = path.join(seriesPath, ".manga-order");
+  if (!fs.existsSync(orderFile)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(orderFile, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+function sortChapterDirs(seriesPath, dirNames) {
+  const order = readChapterOrder(seriesPath);
+  if (!order) return [...dirNames].sort(naturalSort);
+  const dirSet = new Set(dirNames);
+  const validOrder = order.filter((n) => dirSet.has(n));
+  const inOrder = new Set(validOrder);
+  const unordered = dirNames.filter((n) => !inOrder.has(n)).sort(naturalSort);
+  return [...validOrder, ...unordered];
 }
 function autoRenameImages(folderPath) {
   const entries = fs.readdirSync(folderPath, { withFileTypes: true });
@@ -147,11 +177,12 @@ electron.ipcMain.handle("fs:scanLibrary", async (_event, folderPath) => {
       const subEntries = fs.readdirSync(fullPath, { withFileTypes: true });
       const hasSubs = subEntries.some((e) => e.isDirectory());
       if (hasSubs) {
-        const chapterDirs = subEntries.filter((e) => e.isDirectory()).sort((a, b) => naturalSort(a.name, b.name));
+        const chapterDirNames = subEntries.filter((e) => e.isDirectory()).map((e) => e.name);
+        const sortedChapterNames = sortChapterDirs(fullPath, chapterDirNames);
         let totalPages = 0;
         let cover = null;
-        for (const ch of chapterDirs) {
-          const chPath = path.join(fullPath, ch.name);
+        for (const chName of sortedChapterNames) {
+          const chPath = path.join(fullPath, chName);
           const imgs = fs.readdirSync(chPath).filter((f) => IMAGE_EXTS.includes(getExt(f))).sort(naturalSort);
           totalPages += imgs.length;
           if (!cover && imgs.length > 0) cover = path.join(chPath, imgs[0]);
@@ -163,8 +194,9 @@ electron.ipcMain.handle("fs:scanLibrary", async (_event, folderPath) => {
           type: "folder",
           kind: "series",
           cover,
+          coverData: cover ? imagePathToDataUrl(cover) : void 0,
           pageCount: totalPages,
-          chapterCount: chapterDirs.length,
+          chapterCount: sortedChapterNames.length,
           addedAt: fs.statSync(fullPath).mtimeMs
         });
       } else {
@@ -177,6 +209,7 @@ electron.ipcMain.handle("fs:scanLibrary", async (_event, folderPath) => {
             type: "folder",
             kind: "single",
             cover: path.join(fullPath, images[0]),
+            coverData: imagePathToDataUrl(path.join(fullPath, images[0])),
             pageCount: images.length,
             addedAt: fs.statSync(fullPath).mtimeMs
           });
@@ -211,7 +244,12 @@ electron.ipcMain.handle(
   async (_event, bookPath, bookType) => {
     if (bookType === "folder") {
       const files = fs.readdirSync(bookPath).filter((f) => IMAGE_EXTS.includes(getExt(f))).sort(naturalSort);
-      return files.map((f) => `manga-file://${encodeURIComponent(path.join(bookPath, f))}`);
+      return files.map((f) => {
+        const abs = path.join(bookPath, f);
+        const st = fs.statSync(abs);
+        const ver = `${Math.trunc(st.mtimeMs)}-${Math.trunc(st.ctimeMs)}`;
+        return `manga-file://${encodeURIComponent(abs)}?v=${ver}`;
+      });
     } else {
       const zip = new AdmZip(bookPath);
       const pages = zip.getEntries().filter((e) => IMAGE_EXTS.includes(getExt(e.entryName)) && !e.isDirectory).sort((a, b) => naturalSort(a.entryName, b.entryName));
@@ -225,15 +263,16 @@ electron.ipcMain.handle(
 );
 electron.ipcMain.handle("fs:getChapters", async (_event, seriesPath) => {
   if (!fs.existsSync(seriesPath)) return [];
-  const entries = fs.readdirSync(seriesPath, { withFileTypes: true }).filter((e) => e.isDirectory()).sort((a, b) => naturalSort(a.name, b.name));
+  const dirNames = fs.readdirSync(seriesPath, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+  const sortedNames = sortChapterDirs(seriesPath, dirNames);
   const chapters = [];
-  for (let i = 0; i < entries.length; i++) {
-    const chPath = path.join(seriesPath, entries[i].name);
+  for (let i = 0; i < sortedNames.length; i++) {
+    const chPath = path.join(seriesPath, sortedNames[i]);
     const imgs = fs.readdirSync(chPath).filter((f) => IMAGE_EXTS.includes(getExt(f))).sort(naturalSort);
     if (imgs.length > 0) {
       chapters.push({
         id: btoa(encodeURIComponent(chPath)),
-        title: entries[i].name,
+        title: sortedNames[i],
         path: chPath,
         cover: path.join(chPath, imgs[0]),
         pageCount: imgs.length,
@@ -247,15 +286,8 @@ electron.ipcMain.handle(
   "fs:reorderChapters",
   async (_event, seriesPath, chapterNames) => {
     try {
-      const tmpNames = [];
-      for (let i = 0; i < chapterNames.length; i++) {
-        const tmpName = `_reorder_tmp_${i}`;
-        fs.renameSync(path.join(seriesPath, chapterNames[i]), path.join(seriesPath, tmpName));
-        tmpNames.push(tmpName);
-      }
-      for (let i = 0; i < tmpNames.length; i++) {
-        fs.renameSync(path.join(seriesPath, tmpNames[i]), path.join(seriesPath, chapterNames[i]));
-      }
+      const orderFile = path.join(seriesPath, ".manga-order");
+      fs.writeFileSync(orderFile, JSON.stringify(chapterNames, null, 2), "utf-8");
       return true;
     } catch (err) {
       console.error("reorderChapters failed:", err);
@@ -267,17 +299,51 @@ electron.ipcMain.handle(
   "fs:renamePages",
   async (_event, bookPath, filenames) => {
     try {
+      const diskImages = fs.readdirSync(bookPath).filter((f) => IMAGE_EXTS.includes(getExt(f)));
+      const lowerMap = new Map(diskImages.map((n) => [n.toLowerCase(), n]));
+      const normalize = (val) => {
+        const noQuery = val.split("?")[0].split("#")[0];
+        const noProto = noQuery.startsWith("manga-file://") ? noQuery.replace("manga-file://", "") : noQuery;
+        const decoded = decodeURIComponent(noProto);
+        const name = path.basename(decoded.replace(/\\/g, "/"));
+        return name;
+      };
+      const orderedNames = [];
+      for (const raw of filenames) {
+        const wanted = normalize(raw);
+        if (diskImages.includes(wanted)) {
+          orderedNames.push(wanted);
+          continue;
+        }
+        const matched = lowerMap.get(wanted.toLowerCase());
+        if (!matched) {
+          console.error("renamePages failed: source file not found", { bookPath, raw, wanted });
+          return false;
+        }
+        orderedNames.push(matched);
+      }
+      if (orderedNames.length !== diskImages.length) {
+        console.error("renamePages failed: page count mismatch", {
+          bookPath,
+          ordered: orderedNames.length,
+          disk: diskImages.length
+        });
+        return false;
+      }
       const tmpMaps = [];
-      for (let i = 0; i < filenames.length; i++) {
-        const ext = getExt(filenames[i]);
+      for (let i = 0; i < orderedNames.length; i++) {
+        const ext = getExt(orderedNames[i]);
         const tmpName = `_rename_tmp_${i}${ext}`;
-        fs.renameSync(path.join(bookPath, filenames[i]), path.join(bookPath, tmpName));
+        fs.renameSync(path.join(bookPath, orderedNames[i]), path.join(bookPath, tmpName));
         tmpMaps.push({ tmp: tmpName, ext });
       }
       for (let i = 0; i < tmpMaps.length; i++) {
         const finalName = `${String(i + 1).padStart(3, "0")}${tmpMaps[i].ext}`;
         fs.renameSync(path.join(bookPath, tmpMaps[i].tmp), path.join(bookPath, finalName));
       }
+      await Promise.all(
+        electron.BrowserWindow.getAllWindows().map((w) => w.webContents.session.clearCache())
+      );
       return true;
     } catch (err) {
       console.error("renamePages failed:", err);
@@ -290,9 +356,21 @@ electron.ipcMain.handle(
   async (_event, bookPath, newTitle) => {
     try {
       const parent = path.dirname(bookPath);
+      const oldName = path.basename(bookPath);
       const newPath = path.join(parent, newTitle);
       if (fs.existsSync(newPath) && newPath !== bookPath) return null;
-      if (newPath !== bookPath) fs.renameSync(bookPath, newPath);
+      if (newPath !== bookPath) {
+        fs.renameSync(bookPath, newPath);
+        const orderFile = path.join(parent, ".manga-order");
+        if (fs.existsSync(orderFile)) {
+          try {
+            const order = JSON.parse(fs.readFileSync(orderFile, "utf-8"));
+            const updated = order.map((n) => n === oldName ? newTitle : n);
+            fs.writeFileSync(orderFile, JSON.stringify(updated, null, 2), "utf-8");
+          } catch {
+          }
+        }
+      }
       return newPath;
     } catch (err) {
       console.error("renameBook failed:", err);

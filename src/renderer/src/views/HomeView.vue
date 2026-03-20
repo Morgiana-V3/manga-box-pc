@@ -163,7 +163,7 @@
           >
             <div class="list-cover">
               <img v-if="book.coverData" :src="book.coverData" />
-              <img v-else-if="book.cover" :src="`manga-file://${encodeURIComponent(book.cover)}`" />
+              <img v-else-if="book.cover" :src="getBookCoverSrc(book)" />
               <div v-else class="list-cover-placeholder">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                   <path d="M4 19V5a2 2 0 012-2h12a2 2 0 012 2v14M4 19h14a2 2 0 010 4H4v-4z"/>
@@ -247,6 +247,10 @@ function openBook(book: Book): void {
 
 function editBook(book: Book): void {
   router.push(`/edit/${book.id}`)
+}
+
+function getBookCoverSrc(book: Book): string {
+  return `manga-file://${encodeURIComponent(book.cover ?? '')}?v=${library.assetVersion}`
 }
 
 async function removeBook(bookId: string): Promise<void> {
