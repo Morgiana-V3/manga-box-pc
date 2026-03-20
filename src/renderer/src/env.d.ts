@@ -52,9 +52,11 @@ interface ElectronAPI {
   closeWindow: () => void
   openFolder: () => Promise<string | null>
   openArchive: () => Promise<string[]>
+  openFileOrFolder: () => Promise<string[]>
   getDefaultLibraryDir: () => Promise<string>
   importBook: (sourcePath: string, destDir: string) => Promise<boolean>
   removeBook: (bookPath: string) => Promise<boolean>
+  createSeries: (libraryDir: string, seriesName: string) => Promise<boolean>
   scanLibrary: (folderPath: string) => Promise<Book[]>
   getPages: (bookPath: string, bookType: 'folder' | 'archive') => Promise<string[]>
   getChapters: (seriesPath: string) => Promise<Chapter[]>

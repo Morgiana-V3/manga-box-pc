@@ -15,37 +15,6 @@
         </svg>
         <span>最近阅读</span>
       </button>
-
-      <!-- 添加漫画：展开子菜单 -->
-      <div class="nav-group">
-        <button class="nav-item" :class="{ expanded: addMenuOpen }" @click="addMenuOpen = !addMenuOpen">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/>
-            <line x1="8" y1="12" x2="16" y2="12"/>
-          </svg>
-          <span>添加漫画</span>
-          <svg class="chevron" :class="{ rotate: addMenuOpen }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-            <polyline points="6 9 12 15 18 9"/>
-          </svg>
-        </button>
-
-        <div class="sub-menu" :class="{ open: addMenuOpen }">
-          <button class="sub-item" @click="emit('addFolder'); addMenuOpen = false">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>
-            </svg>
-            添加文件夹
-          </button>
-          <button class="sub-item" @click="emit('addArchive'); addMenuOpen = false">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/>
-              <line x1="10" y1="12" x2="14" y2="12"/>
-            </svg>
-            添加压缩包
-          </button>
-        </div>
-      </div>
-
     </nav>
 
     <div class="sidebar-bottom">
@@ -61,18 +30,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
 import { useRoute } from 'vue-router'
 
 const route = useRoute()
-const emit = defineEmits<{
+defineEmits<{
   (e: 'showRecent'): void
-  (e: 'addFolder'): void
-  (e: 'addArchive'): void
   (e: 'showSettings'): void
 }>()
-
-const addMenuOpen = ref(false)
 </script>
 
 <style scoped lang="less">
@@ -125,58 +89,9 @@ const addMenuOpen = ref(false)
     color: @text-primary;
   }
 
-  &.active,
-  &.expanded {
+  &.active {
     background: rgba(124, 58, 237, 0.2);
     color: @accent-light;
-  }
-}
-
-.chevron {
-  margin-left: auto;
-  transition: transform 0.2s ease;
-  flex-shrink: 0;
-
-  &.rotate {
-    transform: rotate(180deg);
-  }
-}
-
-// 子菜单
-.nav-group {
-  .flex-col();
-  gap: 0;
-}
-
-.sub-menu {
-  overflow: hidden;
-  max-height: 0;
-  transition: max-height 0.2s ease, opacity 0.2s ease;
-  opacity: 0;
-
-  &.open {
-    max-height: 120px;
-    opacity: 1;
-  }
-}
-
-.sub-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 7px 12px 7px 40px;
-  background: transparent;
-  border: none;
-  color: @text-muted;
-  font-size: 12px;
-  border-radius: @radius-sm;
-  cursor: pointer;
-  transition: all @transition;
-
-  &:hover {
-    background: @bg-hover;
-    color: @text-primary;
   }
 }
 </style>

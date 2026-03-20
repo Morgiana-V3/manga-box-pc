@@ -8,10 +8,12 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
   // 对话框
   openFolder: () => electron.ipcRenderer.invoke("dialog:openFolder"),
   openArchive: () => electron.ipcRenderer.invoke("dialog:openArchive"),
+  openFileOrFolder: () => electron.ipcRenderer.invoke("dialog:openFileOrFolder"),
   // 漫画库管理
   getDefaultLibraryDir: () => electron.ipcRenderer.invoke("fs:getDefaultLibraryDir"),
   importBook: (sourcePath, destDir) => electron.ipcRenderer.invoke("fs:importBook", sourcePath, destDir),
   removeBook: (bookPath) => electron.ipcRenderer.invoke("fs:removeBook", bookPath),
+  createSeries: (libraryDir, seriesName) => electron.ipcRenderer.invoke("fs:createSeries", libraryDir, seriesName),
   // 文件系统
   scanLibrary: (folderPath) => electron.ipcRenderer.invoke("fs:scanLibrary", folderPath),
   getPages: (bookPath, bookType) => electron.ipcRenderer.invoke("fs:getPages", bookPath, bookType),

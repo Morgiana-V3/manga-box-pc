@@ -129,6 +129,15 @@ electron.ipcMain.handle("dialog:openArchive", async () => {
   if (result.canceled || !result.filePaths.length) return [];
   return result.filePaths;
 });
+electron.ipcMain.handle("dialog:openFileOrFolder", async () => {
+  const result = await electron.dialog.showOpenDialog({
+    title: "选择漫画文件夹或压缩包",
+    filters: [{ name: "Comic Archives", extensions: ["zip", "cbz", "cbr"] }],
+    properties: ["openFile", "openDirectory", "multiSelections"]
+  });
+  if (result.canceled || !result.filePaths.length) return [];
+  return result.filePaths;
+});
 electron.ipcMain.handle("fs:getDefaultLibraryDir", () => DEFAULT_LIBRARY_DIR);
 electron.ipcMain.handle(
   "fs:importBook",
@@ -136,18 +145,43 @@ electron.ipcMain.handle(
     if (!fs.existsSync(sourcePath)) return false;
     fs.mkdirSync(destDir, { recursive: true });
     const name = path.basename(sourcePath);
-    const ext = path.extname(name);
-    const base = path.basename(name, ext);
-    let destPath = path.join(destDir, name);
-    if (fs.existsSync(destPath)) {
-      destPath = path.join(destDir, `${base}_${Date.now()}${ext}`);
-    }
+    const ext = path.extname(name).toLowerCase();
+    const base = path.basename(name, path.extname(name));
     try {
       const stat = fs.statSync(sourcePath);
       if (stat.isDirectory()) {
+        let destPath = path.join(destDir, name);
+        if (fs.existsSync(destPath)) {
+          destPath = path.join(destDir, `${base}_${Date.now()}`);
+        }
         fs.cpSync(sourcePath, destPath, { recursive: true });
         autoRenameImages(destPath);
+      } else if (ARCHIVE_EXTS.includes(ext)) {
+        let destPath = path.join(destDir, base);
+        if (fs.existsSync(destPath)) {
+          destPath = path.join(destDir, `${base}_${Date.now()}`);
+        }
+        fs.mkdirSync(destPath, { recursive: true });
+        const zip = new AdmZip(sourcePath);
+        zip.extractAllTo(destPath, true);
+        const extracted = fs.readdirSync(destPath, { withFileTypes: true });
+        if (extracted.length === 1 && extracted[0].isDirectory()) {
+          const innerDir = path.join(destPath, extracted[0].name);
+          const innerEntries = fs.readdirSync(innerDir);
+          for (const ie of innerEntries) {
+            fs.renameSync(path.join(innerDir, ie), path.join(destPath, ie));
+          }
+          try {
+            fs.rmdirSync(innerDir);
+          } catch {
+          }
+        }
+        autoRenameImages(destPath);
       } else {
+        let destPath = path.join(destDir, name);
+        if (fs.existsSync(destPath)) {
+          destPath = path.join(destDir, `${base}_${Date.now()}${ext}`);
+        }
         fs.copyFileSync(sourcePath, destPath);
       }
       return true;
@@ -167,6 +201,25 @@ electron.ipcMain.handle("fs:removeBook", async (_event, bookPath) => {
     return false;
   }
 });
+electron.ipcMain.handle(
+  "fs:createSeries",
+  async (_event, libraryDir, seriesName) => {
+    try {
+      const trimmed = seriesName.trim();
+      if (!trimmed) return false;
+      let destPath = path.join(libraryDir, trimmed);
+      if (fs.existsSync(destPath)) {
+        destPath = path.join(libraryDir, `${trimmed}_${Date.now()}`);
+      }
+      fs.mkdirSync(destPath, { recursive: true });
+      fs.writeFileSync(path.join(destPath, ".manga-series"), "", "utf-8");
+      return true;
+    } catch (err) {
+      console.error("createSeries failed:", err);
+      return false;
+    }
+  }
+);
 electron.ipcMain.handle("fs:scanLibrary", async (_event, folderPath) => {
   if (!fs.existsSync(folderPath)) return [];
   const entries = fs.readdirSync(folderPath, { withFileTypes: true });
@@ -176,7 +229,8 @@ electron.ipcMain.handle("fs:scanLibrary", async (_event, folderPath) => {
     if (entry.isDirectory()) {
       const subEntries = fs.readdirSync(fullPath, { withFileTypes: true });
       const hasSubs = subEntries.some((e) => e.isDirectory());
-      if (hasSubs) {
+      const hasSeriesMarker = fs.existsSync(path.join(fullPath, ".manga-series"));
+      if (hasSubs || hasSeriesMarker) {
         const chapterDirNames = subEntries.filter((e) => e.isDirectory()).map((e) => e.name);
         const sortedChapterNames = sortChapterDirs(fullPath, chapterDirNames);
         let totalPages = 0;

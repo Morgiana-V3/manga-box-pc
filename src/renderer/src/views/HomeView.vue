@@ -2,8 +2,6 @@
   <div class="home">
     <Sidebar
       @show-recent="activeTab = 'recent'"
-      @add-folder="handleAddFolder"
-      @add-archive="handleAddArchive"
       @show-settings="showSettings = true"
     />
 
@@ -81,6 +79,45 @@
             </svg>
             刷新
           </button>
+
+          <!-- 新增按钮 -->
+          <div ref="addMenuRef" class="add-menu-wrap">
+            <button
+              class="btn btn-primary btn-add"
+              :disabled="library.isImporting"
+              @click="showAddMenu = !showAddMenu"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+            </button>
+
+            <Transition name="pop">
+              <div v-if="showAddMenu" class="add-menu-pop">
+                <button class="add-menu-item" @click="handleCreateSeries">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>
+                    <line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/>
+                  </svg>
+                  <div class="add-menu-text">
+                    <span class="add-menu-title">新建系列</span>
+                    <span class="add-menu-desc">创建空系列，再导入单话</span>
+                  </div>
+                </button>
+                <button class="add-menu-item" @click="handleImportManga">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                  </svg>
+                  <div class="add-menu-text">
+                    <span class="add-menu-title">导入漫画</span>
+                    <span class="add-menu-desc">选择文件夹或压缩包</span>
+                  </div>
+                </button>
+              </div>
+            </Transition>
+          </div>
         </div>
       </div>
 
@@ -123,20 +160,22 @@
             </svg>
           </div>
           <h3>{{ searchQuery ? '没有找到匹配的漫画' : '书架空空如也' }}</h3>
-          <p>{{ searchQuery ? '试试其他关键词' : '拖拽文件夹或压缩包到此处，或点击下方按钮添加' }}</p>
+          <p>{{ searchQuery ? '试试其他关键词' : '拖拽文件夹或压缩包到此处，或点击右上角 + 添加' }}</p>
           <div v-if="!searchQuery" class="empty-actions">
-            <button class="btn btn-primary" @click="handleAddFolder">
+            <button class="btn btn-primary" @click="handleCreateSeries">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
                 <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>
+                <line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/>
               </svg>
-              添加文件夹
+              新建系列
             </button>
-            <button class="btn btn-ghost" @click="handleAddArchive">
+            <button class="btn btn-ghost" @click="handleImportManga">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                <polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/>
-                <line x1="10" y1="12" x2="14" y2="12"/>
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
               </svg>
-              添加压缩包
+              导入漫画
             </button>
           </div>
         </div>
@@ -199,6 +238,35 @@
     <!-- 设置面板 -->
     <SettingsPanel v-if="showSettings" @close="showSettings = false" />
 
+    <!-- 新建系列弹窗 -->
+    <Transition name="fade">
+      <div v-if="showCreateSeries" class="modal-backdrop" @click.self="cancelCreateSeries">
+        <div class="modal-card">
+          <h3 class="modal-title">新建系列</h3>
+          <p class="modal-desc">创建一个空的系列，之后可在系列内导入单话</p>
+          <input
+            v-model="newSeriesName"
+            class="modal-input"
+            type="text"
+            placeholder="输入系列名称..."
+            autofocus
+            @keydown.enter.prevent="confirmCreateSeries"
+            @keydown.escape.prevent="cancelCreateSeries"
+          />
+          <div class="modal-actions">
+            <button class="btn btn-ghost" @click="cancelCreateSeries">取消</button>
+            <button
+              class="btn btn-primary"
+              :disabled="!newSeriesName.trim() || isCreatingSeries"
+              @click="confirmCreateSeries"
+            >
+              {{ isCreatingSeries ? '创建中...' : '创建' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
     <!-- 拖拽覆盖层 -->
     <div v-if="isDragging" class="drag-overlay">
       <div class="drag-hint">
@@ -214,7 +282,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useLibraryStore } from '../stores/library'
 import Sidebar from '../components/Sidebar.vue'
@@ -229,6 +297,15 @@ const searchQuery = ref<string>('')
 const viewMode = ref<'grid' | 'list'>('grid')
 const isDragging = ref<boolean>(false)
 const showSettings = ref<boolean>(false)
+
+// +按钮弹出面板
+const showAddMenu = ref<boolean>(false)
+const addMenuRef = ref<HTMLElement | null>(null)
+
+// 新建系列弹窗
+const showCreateSeries = ref<boolean>(false)
+const newSeriesName = ref<string>('')
+const isCreatingSeries = ref<boolean>(false)
 
 const filteredBooks = computed<Book[]>(() => {
   const source = activeTab.value === 'recent' ? library.recentBooks : library.books
@@ -257,21 +334,45 @@ async function removeBook(bookId: string): Promise<void> {
   await library.removeBook(bookId)
 }
 
-async function handleAddFolder(): Promise<void> {
-  const folderPath = await window.electronAPI.openFolder()
-  if (!folderPath) return
-  library.isImporting = true
+// ─── 新建系列 ───
+function handleCreateSeries(): void {
+  showAddMenu.value = false
+  newSeriesName.value = ''
+  showCreateSeries.value = true
+}
+
+async function confirmCreateSeries(): Promise<void> {
+  const name = newSeriesName.value.trim()
+  if (!name || isCreatingSeries.value) return
+
+  isCreatingSeries.value = true
   try {
-    await window.electronAPI.importBook(folderPath, library.libraryPath)
-    await library.refreshLibrary()
+    const ok = await window.electronAPI.createSeries(library.libraryPath, name)
+    if (ok) {
+      await library.refreshLibrary()
+      showCreateSeries.value = false
+      // 自动跳转到刚创建的系列
+      const created = library.books.find((b) => b.kind === 'series' && b.title === name)
+      if (created) {
+        router.push(`/series/${created.id}`)
+      }
+    }
   } finally {
-    library.isImporting = false
+    isCreatingSeries.value = false
   }
 }
 
-async function handleAddArchive(): Promise<void> {
-  const paths = await window.electronAPI.openArchive()
+function cancelCreateSeries(): void {
+  showCreateSeries.value = false
+  newSeriesName.value = ''
+}
+
+// ─── 统一导入漫画（文件夹 + 压缩包） ───
+async function handleImportManga(): Promise<void> {
+  showAddMenu.value = false
+  const paths = await window.electronAPI.openFileOrFolder()
   if (!paths.length) return
+
   library.isImporting = true
   try {
     for (const p of paths) {
@@ -300,6 +401,23 @@ async function handleDrop(e: DragEvent): Promise<void> {
     library.isImporting = false
   }
 }
+
+// 点击外部关闭 +按钮面板
+function onGlobalPointerDown(e: PointerEvent): void {
+  if (!showAddMenu.value) return
+  const target = e.target as Node | null
+  if (!target) return
+  if (!addMenuRef.value?.contains(target)) {
+    showAddMenu.value = false
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('pointerdown', onGlobalPointerDown)
+})
+onUnmounted(() => {
+  document.removeEventListener('pointerdown', onGlobalPointerDown)
+})
 </script>
 
 <style scoped lang="less">
@@ -600,5 +718,142 @@ async function handleDrop(e: DragEvent): Promise<void> {
   color: @accent-light;
   font-size: 16px;
   font-weight: 600;
+}
+
+// ── + 按钮弹出面板 ──
+.add-menu-wrap {
+  position: relative;
+}
+
+.btn-add {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  .flex-center();
+  border-radius: @radius-sm;
+}
+
+.add-menu-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 220px;
+  background: @bg-card;
+  border: 1px solid @border;
+  border-radius: @radius;
+  padding: 6px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  z-index: 100;
+}
+
+.add-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  color: @text-primary;
+  border-radius: @radius-sm;
+  cursor: pointer;
+  transition: background @transition;
+  text-align: left;
+
+  &:hover {
+    background: @bg-hover;
+  }
+
+  svg {
+    flex-shrink: 0;
+    color: @accent-light;
+  }
+}
+
+.add-menu-text {
+  .flex-col();
+  gap: 2px;
+}
+
+.add-menu-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.add-menu-desc {
+  font-size: 11px;
+  color: @text-muted;
+}
+
+// pop 动画
+.pop-enter-active {
+  transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.pop-leave-active {
+  transition: all 0.1s ease-in;
+}
+.pop-enter-from, .pop-leave-to {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.96);
+}
+
+// ── 新建系列弹窗 ──
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  z-index: 1000;
+  .flex-center();
+}
+
+.modal-card {
+  background: @bg-card;
+  border: 1px solid @border;
+  border-radius: @radius;
+  padding: 28px;
+  width: 380px;
+  max-width: 90vw;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  .flex-col();
+  gap: 16px;
+}
+
+.modal-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: @text-primary;
+}
+
+.modal-desc {
+  font-size: 13px;
+  color: @text-muted;
+  margin-top: -8px;
+}
+
+.modal-input {
+  background: @bg-secondary;
+  border: 1px solid @border;
+  border-radius: @radius-sm;
+  padding: 10px 14px;
+  color: @text-primary;
+  font-size: 14px;
+  outline: none;
+  transition: border-color @transition;
+
+  &:focus {
+    border-color: @border-accent;
+  }
+
+  &::placeholder {
+    color: @text-muted;
+  }
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
 }
 </style>

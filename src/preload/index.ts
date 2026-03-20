@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 对话框
   openFolder: (): Promise<string | null> => ipcRenderer.invoke('dialog:openFolder'),
   openArchive: (): Promise<string[]> => ipcRenderer.invoke('dialog:openArchive'),
+  openFileOrFolder: (): Promise<string[]> => ipcRenderer.invoke('dialog:openFileOrFolder'),
 
   // 漫画库管理
   getDefaultLibraryDir: (): Promise<string> => ipcRenderer.invoke('fs:getDefaultLibraryDir'),
@@ -16,6 +17,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('fs:importBook', sourcePath, destDir),
   removeBook: (bookPath: string): Promise<boolean> =>
     ipcRenderer.invoke('fs:removeBook', bookPath),
+  createSeries: (libraryDir: string, seriesName: string): Promise<boolean> =>
+    ipcRenderer.invoke('fs:createSeries', libraryDir, seriesName),
 
   // 文件系统
   scanLibrary: (folderPath: string) => ipcRenderer.invoke('fs:scanLibrary', folderPath),

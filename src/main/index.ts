@@ -9,7 +9,8 @@ import {
   copyFileSync,
   renameSync,
   readFileSync,
-  writeFileSync
+  writeFileSync,
+  rmdirSync
 } from 'fs'
 import Store from 'electron-store'
 import AdmZip from 'adm-zip'
@@ -150,9 +151,10 @@ function sortChapterDirs(seriesPath: string, dirNames: string[]): string[] {
   return [...validOrder, ...unordered]
 }
 
-/** 判断文件夹是否为系列（包含子目录） */
+/** 判断文件夹是否为系列（包含子目录 或 存在 .manga-series 标记文件） */
 function checkIsSeries(folderPath: string): boolean {
   try {
+    if (existsSync(join(folderPath, '.manga-series'))) return true
     return readdirSync(folderPath, { withFileTypes: true }).some((e) => e.isDirectory())
   } catch {
     return false
@@ -224,9 +226,20 @@ ipcMain.handle('dialog:openArchive', async (): Promise<string[]> => {
   return result.filePaths
 })
 
+/** 统一的文件/文件夹选择对话框，可同时选择文件夹和压缩包 */
+ipcMain.handle('dialog:openFileOrFolder', async (): Promise<string[]> => {
+  const result = await dialog.showOpenDialog({
+    title: '选择漫画文件夹或压缩包',
+    filters: [{ name: 'Comic Archives', extensions: ['zip', 'cbz', 'cbr'] }],
+    properties: ['openFile', 'openDirectory', 'multiSelections']
+  })
+  if (result.canceled || !result.filePaths.length) return []
+  return result.filePaths
+})
+
 ipcMain.handle('fs:getDefaultLibraryDir', () => DEFAULT_LIBRARY_DIR)
 
-/** 导入漫画：复制到书库目录，文件夹自动重命名图片 */
+/** 导入漫画：文件夹直接复制，压缩包自动解压为文件夹，统一以目录方式存储 */
 ipcMain.handle(
   'fs:importBook',
   async (_event, sourcePath: string, destDir: string): Promise<boolean> => {
@@ -235,21 +248,51 @@ ipcMain.handle(
     mkdirSync(destDir, { recursive: true })
 
     const name = basename(sourcePath)
-    const ext = extname(name)
-    const base = basename(name, ext)
-
-    let destPath = join(destDir, name)
-    if (existsSync(destPath)) {
-      destPath = join(destDir, `${base}_${Date.now()}${ext}`)
-    }
+    const ext = extname(name).toLowerCase()
+    const base = basename(name, extname(name))
 
     try {
       const stat = statSync(sourcePath)
+
       if (stat.isDirectory()) {
+        // 文件夹：直接复制
+        let destPath = join(destDir, name)
+        if (existsSync(destPath)) {
+          destPath = join(destDir, `${base}_${Date.now()}`)
+        }
         cpSync(sourcePath, destPath, { recursive: true })
-        // 导入后自动按序号重命名
+        autoRenameImages(destPath)
+      } else if (ARCHIVE_EXTS.includes(ext)) {
+        // 压缩包：解压为同名文件夹
+        let destPath = join(destDir, base)
+        if (existsSync(destPath)) {
+          destPath = join(destDir, `${base}_${Date.now()}`)
+        }
+        mkdirSync(destPath, { recursive: true })
+
+        const zip = new AdmZip(sourcePath)
+        zip.extractAllTo(destPath, true)
+
+        // 解压后可能有一层多余的根目录（如 zip 里只有一个目录），做扁平化处理
+        const extracted = readdirSync(destPath, { withFileTypes: true })
+        if (extracted.length === 1 && extracted[0].isDirectory()) {
+          // 只有一个子目录，把内容提升一级
+          const innerDir = join(destPath, extracted[0].name)
+          const innerEntries = readdirSync(innerDir)
+          for (const ie of innerEntries) {
+            renameSync(join(innerDir, ie), join(destPath, ie))
+          }
+          // 删除空的内层目录
+          try { rmdirSync(innerDir) } catch { /* ignore */ }
+        }
+
         autoRenameImages(destPath)
       } else {
+        // 其他文件：直接复制（兜底）
+        let destPath = join(destDir, name)
+        if (existsSync(destPath)) {
+          destPath = join(destDir, `${base}_${Date.now()}${ext}`)
+        }
         copyFileSync(sourcePath, destPath)
       }
       return true
@@ -272,6 +315,29 @@ ipcMain.handle('fs:removeBook', async (_event, bookPath: string): Promise<boolea
   }
 })
 
+/** 在书库中创建空系列目录（带 .manga-series 标记文件） */
+ipcMain.handle(
+  'fs:createSeries',
+  async (_event, libraryDir: string, seriesName: string): Promise<boolean> => {
+    try {
+      const trimmed = seriesName.trim()
+      if (!trimmed) return false
+
+      let destPath = join(libraryDir, trimmed)
+      if (existsSync(destPath)) {
+        destPath = join(libraryDir, `${trimmed}_${Date.now()}`)
+      }
+
+      mkdirSync(destPath, { recursive: true })
+      writeFileSync(join(destPath, '.manga-series'), '', 'utf-8')
+      return true
+    } catch (err) {
+      console.error('createSeries failed:', err)
+      return false
+    }
+  }
+)
+
 /** 扫描书库，自动识别单本 vs 系列 */
 ipcMain.handle('fs:scanLibrary', async (_event, folderPath: string): Promise<Book[]> => {
   if (!existsSync(folderPath)) return []
@@ -284,8 +350,9 @@ ipcMain.handle('fs:scanLibrary', async (_event, folderPath: string): Promise<Boo
     if (entry.isDirectory()) {
       const subEntries = readdirSync(fullPath, { withFileTypes: true })
       const hasSubs = subEntries.some((e) => e.isDirectory())
+      const hasSeriesMarker = existsSync(join(fullPath, '.manga-series'))
 
-      if (hasSubs) {
+      if (hasSubs || hasSeriesMarker) {
         // ── 系列：子目录 = 话数，按 .manga-order 文件排序（如有），否则自然排序 ──
         const chapterDirNames = subEntries
           .filter((e) => e.isDirectory())
