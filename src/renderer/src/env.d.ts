@@ -46,6 +46,24 @@ interface ReaderContext {
   totalChapters?: number
 }
 
+interface SeriesInfo {
+  name: string
+  path: string
+  chapterCount: number
+}
+
+interface SniffedImage {
+  url: string
+  size: number
+  contentType: string
+}
+
+interface DownloadProgress {
+  current: number
+  total: number
+  downloaded: number
+}
+
 interface ElectronAPI {
   minimizeWindow: () => void
   maximizeWindow: () => void
@@ -64,6 +82,32 @@ interface ElectronAPI {
   renamePages: (bookPath: string, filenames: string[]) => Promise<boolean>
   reorderChapters: (seriesPath: string, chapterNames: string[]) => Promise<boolean>
   renameBook: (bookPath: string, newTitle: string) => Promise<string | null>
+  // 在线抓取 / 嗅探
+  sniffStart: (url: string) => Promise<boolean>
+  sniffStop: () => Promise<void>
+  sniffGetImages: () => Promise<SniffedImage[]>
+  sniffExecuteJS: (code: string) => Promise<unknown>
+  sniffGetCurrentURL: () => Promise<string>
+  sniffNavigate: (url: string) => Promise<boolean>
+  sniffClearImages: () => Promise<void>
+  sniffAutoScroll: () => Promise<number>
+  sniffCaptureCanvas: () => Promise<string[]>
+  sniffScrollAndCapture: () => Promise<string[]>
+  sniffSaveDataUrlsToLibrary: (dataUrls: string[], title: string, libraryDir: string) => Promise<boolean>
+  sniffSaveToLibrary: (imageUrls: string[], title: string, libraryDir: string) => Promise<boolean>
+  sniffSaveGrab: (opts: {
+    mode: 'single' | 'series'
+    seriesPath: string
+    seriesName: string
+    chapterName: string
+    canvasDataUrls: string[]
+    networkUrls: string[]
+    libraryDir: string
+  }) => Promise<{ ok: boolean; savedCount: number }>
+  sniffGetSeriesList: (libraryDir: string) => Promise<SeriesInfo[]>
+  onSniffImageFound: (callback: (data: SniffedImage) => void) => () => void
+  onSniffDownloadProgress: (callback: (data: DownloadProgress) => void) => () => void
+  // 持久化存储
   storeGet: (key: string) => Promise<unknown>
   storeSet: (key: string, value: unknown) => Promise<void>
   storeDelete: (key: string) => Promise<void>

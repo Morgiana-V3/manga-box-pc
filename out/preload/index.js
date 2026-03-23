@@ -23,6 +23,31 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
   renamePages: (bookPath, filenames) => electron.ipcRenderer.invoke("fs:renamePages", bookPath, filenames),
   reorderChapters: (seriesPath, chapterNames) => electron.ipcRenderer.invoke("fs:reorderChapters", seriesPath, chapterNames),
   renameBook: (bookPath, newTitle) => electron.ipcRenderer.invoke("fs:renameBook", bookPath, newTitle),
+  // 在线抓取 / 嗅探
+  sniffStart: (url) => electron.ipcRenderer.invoke("sniff:start", url),
+  sniffStop: () => electron.ipcRenderer.invoke("sniff:stop"),
+  sniffGetImages: () => electron.ipcRenderer.invoke("sniff:getImages"),
+  sniffExecuteJS: (code) => electron.ipcRenderer.invoke("sniff:executeJS", code),
+  sniffGetCurrentURL: () => electron.ipcRenderer.invoke("sniff:getCurrentURL"),
+  sniffNavigate: (url) => electron.ipcRenderer.invoke("sniff:navigate", url),
+  sniffClearImages: () => electron.ipcRenderer.invoke("sniff:clearImages"),
+  sniffAutoScroll: () => electron.ipcRenderer.invoke("sniff:autoScroll"),
+  sniffCaptureCanvas: () => electron.ipcRenderer.invoke("sniff:captureCanvas"),
+  sniffScrollAndCapture: () => electron.ipcRenderer.invoke("sniff:scrollAndCapture"),
+  sniffSaveDataUrlsToLibrary: (dataUrls, title, libraryDir) => electron.ipcRenderer.invoke("sniff:saveDataUrlsToLibrary", dataUrls, title, libraryDir),
+  sniffSaveToLibrary: (imageUrls, title, libraryDir) => electron.ipcRenderer.invoke("sniff:saveToLibrary", imageUrls, title, libraryDir),
+  sniffSaveGrab: (opts) => electron.ipcRenderer.invoke("sniff:saveGrab", opts),
+  sniffGetSeriesList: (libraryDir) => electron.ipcRenderer.invoke("sniff:getSeriesList", libraryDir),
+  onSniffImageFound: (callback) => {
+    const handler = (_event, data) => callback(data);
+    electron.ipcRenderer.on("sniff:image-found", handler);
+    return () => electron.ipcRenderer.removeListener("sniff:image-found", handler);
+  },
+  onSniffDownloadProgress: (callback) => {
+    const handler = (_event, data) => callback(data);
+    electron.ipcRenderer.on("sniff:download-progress", handler);
+    return () => electron.ipcRenderer.removeListener("sniff:download-progress", handler);
+  },
   // 持久化存储
   storeGet: (key) => electron.ipcRenderer.invoke("store:get", key),
   storeSet: (key, value) => electron.ipcRenderer.invoke("store:set", key, value),

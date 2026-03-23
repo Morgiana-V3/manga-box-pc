@@ -36,6 +36,45 @@ contextBridge.exposeInMainWorld('electronAPI', {
   renameBook: (bookPath: string, newTitle: string): Promise<string | null> =>
     ipcRenderer.invoke('fs:renameBook', bookPath, newTitle),
 
+  // 在线抓取 / 嗅探
+  sniffStart: (url: string): Promise<boolean> => ipcRenderer.invoke('sniff:start', url),
+  sniffStop: (): Promise<void> => ipcRenderer.invoke('sniff:stop'),
+  sniffGetImages: (): Promise<Array<{ url: string; size: number; contentType: string }>> =>
+    ipcRenderer.invoke('sniff:getImages'),
+  sniffExecuteJS: (code: string): Promise<unknown> => ipcRenderer.invoke('sniff:executeJS', code),
+  sniffGetCurrentURL: (): Promise<string> => ipcRenderer.invoke('sniff:getCurrentURL'),
+  sniffNavigate: (url: string): Promise<boolean> => ipcRenderer.invoke('sniff:navigate', url),
+  sniffClearImages: (): Promise<void> => ipcRenderer.invoke('sniff:clearImages'),
+  sniffAutoScroll: (): Promise<number> => ipcRenderer.invoke('sniff:autoScroll'),
+  sniffCaptureCanvas: (): Promise<string[]> => ipcRenderer.invoke('sniff:captureCanvas'),
+  sniffScrollAndCapture: (): Promise<string[]> => ipcRenderer.invoke('sniff:scrollAndCapture'),
+  sniffSaveDataUrlsToLibrary: (dataUrls: string[], title: string, libraryDir: string): Promise<boolean> =>
+    ipcRenderer.invoke('sniff:saveDataUrlsToLibrary', dataUrls, title, libraryDir),
+  sniffSaveToLibrary: (imageUrls: string[], title: string, libraryDir: string): Promise<boolean> =>
+    ipcRenderer.invoke('sniff:saveToLibrary', imageUrls, title, libraryDir),
+  sniffSaveGrab: (opts: {
+    mode: 'single' | 'series'
+    seriesPath: string
+    seriesName: string
+    chapterName: string
+    canvasDataUrls: string[]
+    networkUrls: string[]
+    libraryDir: string
+  }): Promise<{ ok: boolean; savedCount: number }> =>
+    ipcRenderer.invoke('sniff:saveGrab', opts),
+  sniffGetSeriesList: (libraryDir: string): Promise<Array<{ name: string; path: string; chapterCount: number }>> =>
+    ipcRenderer.invoke('sniff:getSeriesList', libraryDir),
+  onSniffImageFound: (callback: (data: { url: string; size: number; contentType: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { url: string; size: number; contentType: string }): void => callback(data)
+    ipcRenderer.on('sniff:image-found', handler)
+    return () => ipcRenderer.removeListener('sniff:image-found', handler)
+  },
+  onSniffDownloadProgress: (callback: (data: { current: number; total: number; downloaded: number }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { current: number; total: number; downloaded: number }): void => callback(data)
+    ipcRenderer.on('sniff:download-progress', handler)
+    return () => ipcRenderer.removeListener('sniff:download-progress', handler)
+  },
+
   // 持久化存储
   storeGet: (key: string) => ipcRenderer.invoke('store:get', key),
   storeSet: (key: string, value: unknown) => ipcRenderer.invoke('store:set', key, value),
