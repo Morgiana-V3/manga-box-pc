@@ -28,23 +28,121 @@
             placeholder="输入漫画网页地址，如 https://example.com/manga/chapter-1"
             @keydown.enter.prevent="startSniff"
           />
-          <!-- 预览窗口开关 -->
-          <button
-            class="btn btn-preview btn-sm"
-            :class="{ active: previewVisible }"
-            @click="togglePreview"
-            title="显示/隐藏嗅探预览窗口"
-          >
-            <svg v-if="previewVisible" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-              <circle cx="12" cy="12" r="3"/>
-            </svg>
-            <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/>
-              <line x1="1" y1="1" x2="23" y2="23"/>
-            </svg>
-            {{ previewVisible ? '预览中' : '预览' }}
-          </button>
+          <!-- 嗅探配置按钮 -->
+          <div class="config-wrapper" ref="configWrapperRef">
+            <button
+              class="btn btn-config btn-sm"
+              :class="{ active: showConfigPanel }"
+              @click="showConfigPanel = !showConfigPanel"
+              title="嗅探配置"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/>
+              </svg>
+            </button>
+            <!-- 配置面板 -->
+            <Transition name="config-panel">
+              <div v-if="showConfigPanel" class="config-panel">
+                <div class="config-title">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>
+                  </svg>
+                  嗅探配置
+                </div>
+
+                <!-- 预览窗口 -->
+                <label class="config-item" @click.prevent="toggleConfigPreview">
+                  <div class="config-check" :class="{ checked: sniffConfig.showPreview }">
+                    <svg v-if="sniffConfig.showPreview" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                  </div>
+                  <div class="config-label">
+                    <span>打开预览窗口</span>
+                    <span class="config-desc">嗅探时显示可视化预览，可手动操作页面</span>
+                  </div>
+                </label>
+
+                <!-- Canvas 捕获 -->
+                <label class="config-item" @click.prevent="toggleConfig('captureCanvas')">
+                  <div class="config-check" :class="{ checked: sniffConfig.captureCanvas }">
+                    <svg v-if="sniffConfig.captureCanvas" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                  </div>
+                  <div class="config-label">
+                    <span>捕获 Canvas 图片</span>
+                    <span class="config-desc">适用于使用 Canvas 渲染漫画的网站</span>
+                  </div>
+                </label>
+
+                <!-- 漫画类型 -->
+                <div class="config-section-label">漫画布局类型</div>
+                <div class="config-radio-group">
+                  <label class="config-radio" @click.prevent="setComicLayout('scroll')">
+                    <div class="radio-dot" :class="{ active: sniffConfig.comicLayout === 'scroll' }">
+                      <div v-if="sniffConfig.comicLayout === 'scroll'" class="radio-inner" />
+                    </div>
+                    <div class="config-label">
+                      <span>滚动式（条漫）</span>
+                      <span class="config-desc">长页面上下滚动加载，自动滚动到底</span>
+                    </div>
+                  </label>
+                  <label class="config-radio" @click.prevent="setComicLayout('paginated')">
+                    <div class="radio-dot" :class="{ active: sniffConfig.comicLayout === 'paginated' }">
+                      <div v-if="sniffConfig.comicLayout === 'paginated'" class="radio-inner" />
+                    </div>
+                    <div class="config-label">
+                      <span>分页式（翻页漫画）</span>
+                      <span class="config-desc">点击/键盘翻页，逐页加载图片</span>
+                    </div>
+                  </label>
+                </div>
+
+                <!-- 自动滚动 -->
+                <label class="config-item" @click.prevent="toggleConfig('autoScrollOnStart')">
+                  <div class="config-check" :class="{ checked: sniffConfig.autoScrollOnStart }">
+                    <svg v-if="sniffConfig.autoScrollOnStart" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                  </div>
+                  <div class="config-label">
+                    <span>嗅探后自动滚动</span>
+                    <span class="config-desc">开始嗅探后自动执行滚动，触发懒加载图片</span>
+                  </div>
+                </label>
+
+                <!-- 最小图片尺寸过滤 -->
+                <label class="config-item" @click.prevent="toggleConfig('filterSmallImages')">
+                  <div class="config-check" :class="{ checked: sniffConfig.filterSmallImages }">
+                    <svg v-if="sniffConfig.filterSmallImages" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                  </div>
+                  <div class="config-label">
+                    <div class="config-label-row">
+                      <span>过滤小图片</span>
+                      <div class="size-input-group" @click.stop>
+                        <span class="size-label">≤</span>
+                        <input
+                          class="size-input"
+                          type="number"
+                          min="0"
+                          max="1000"
+                          :value="sniffConfig.minImageSize"
+                          :disabled="!sniffConfig.filterSmallImages"
+                          @input="onMinSizeInput($event)"
+                          @blur="onMinSizeBlur"
+                        />
+                        <span class="size-label">KB</span>
+                      </div>
+                    </div>
+                    <span class="config-desc">小于阈值的图片自动取消勾选，仍会展示在列表中</span>
+                  </div>
+                </label>
+              </div>
+            </Transition>
+          </div>
           <button
             v-if="!isSniffing"
             class="btn btn-primary btn-sm"
@@ -68,11 +166,15 @@
             <template v-if="isSniffing">
               嗅探器<strong>持续监听中</strong> — 可在预览窗口手动滚动、翻页、登录，新图片会自动录入。
             </template>
-            <template v-else-if="previewVisible">
-              预览窗口已打开 — 可在预览中直接浏览、登录、调试。嗅探器会实时拦截所有图片资源。
+            <template v-else-if="sniffConfig.showPreview">
+              预览窗口已启用 — 嗅探时会打开可视化窗口，可在预览中直接浏览、登录。
             </template>
             <template v-else>
-              嗅探器会在后台打开网页，自动拦截所有图片资源。点击「预览」可打开可视化窗口查看加载过程。
+              嗅探器会在后台打开网页，自动拦截所有图片资源。可通过
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="display:inline;vertical-align:-1px;margin:0 2px">
+                <path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/>
+              </svg>
+              配置开启预览窗口。
             </template>
           </p>
           <p v-if="loginStatus.hasCookies" class="url-hint login-hint">
@@ -98,6 +200,9 @@
               &nbsp;| Canvas <strong>{{ canvasImages.length }}</strong> 张
             </template>
           </span>
+          <span v-if="sniffConfig.comicLayout === 'paginated'" class="status-tag layout-tag">分页式</span>
+          <span v-else class="status-tag layout-tag">滚动式</span>
+          <span v-if="sniffConfig.captureCanvas" class="status-tag canvas-tag">Canvas</span>
         </div>
         <div class="sniff-actions">
           <!-- 重新扫描：手动触发懒加载，抓取预览窗口中新出现的图片 -->
@@ -131,7 +236,7 @@
             {{ isScrolling ? '滚动中...' : '自动滚动' }}
           </button>
           <button
-            v-if="isSniffing"
+            v-if="isSniffing && sniffConfig.captureCanvas"
             class="btn btn-accent btn-sm"
             :disabled="isCapturing"
             @click="captureCanvas"
@@ -146,7 +251,7 @@
             {{ isCapturing ? '捕获中...' : '捕获Canvas' }}
           </button>
           <button
-            v-if="isSniffing"
+            v-if="isSniffing && sniffConfig.captureCanvas"
             class="btn btn-accent btn-sm"
             :disabled="isCapturing"
             @click="scrollAndCapture"
@@ -412,8 +517,129 @@ const saveProgress = ref({ current: 0, total: 0, downloaded: 0 })
 // ─── 登录状态 ───
 const loginStatus = ref<{ hasCookies: boolean; cookieCount: number }>({ hasCookies: false, cookieCount: 0 })
 
-// ─── 预览窗口状态 ───
-const previewVisible = ref(true)
+// ─── 嗅探配置 ───
+interface SniffConfig {
+  showPreview: boolean
+  captureCanvas: boolean
+  comicLayout: 'scroll' | 'paginated'
+  autoScrollOnStart: boolean
+  filterSmallImages: boolean
+  minImageSize: number // 单位 KB
+}
+
+const sniffConfig = ref<SniffConfig>({
+  showPreview: true,
+  captureCanvas: true,
+  comicLayout: 'scroll',
+  autoScrollOnStart: false,
+  filterSmallImages: true,
+  minImageSize: 5
+})
+
+const showConfigPanel = ref(false)
+const configWrapperRef = ref<HTMLElement | null>(null)
+
+// 预览窗口状态现在由 sniffConfig.showPreview 控制
+
+/** 切换配置选项（布尔类型） */
+function toggleConfig(key: 'captureCanvas' | 'autoScrollOnStart' | 'filterSmallImages'): void {
+  sniffConfig.value[key] = !sniffConfig.value[key]
+  saveSniffConfig()
+  // 切换过滤小图片时，重新计算已有图片的勾选状态
+  if (key === 'filterSmallImages') {
+    reapplyImageFilter()
+  }
+}
+
+/** 判断图片是否应该默认勾选（根据过滤配置和尺寸） */
+function shouldAutoSelect(sizeBytes: number): boolean {
+  if (!sniffConfig.value.filterSmallImages) return true
+  // 如果还没有 size 信息（0 或 undefined），先默认勾选，等 size 更新后再判断
+  if (!sizeBytes || sizeBytes <= 0) return true
+  const sizeKB = sizeBytes / 1024
+  return sizeKB >= sniffConfig.value.minImageSize
+}
+
+/** 重新应用图片过滤：根据当前配置更新所有已有图片的勾选状态 */
+function reapplyImageFilter(): void {
+  if (!sniffConfig.value.filterSmallImages) {
+    // 关闭过滤：全选所有图片
+    selectedUrls.value = new Set(images.value.map((i) => i.url))
+  } else {
+    // 开启过滤：只选择大于阈值的图片
+    const thresholdBytes = sniffConfig.value.minImageSize * 1024
+    const newSet = new Set<string>()
+    for (const img of images.value) {
+      if (!img.size || img.size <= 0 || img.size >= thresholdBytes) {
+        newSet.add(img.url)
+      }
+    }
+    selectedUrls.value = newSet
+  }
+}
+
+/** 设置漫画布局类型 */
+function setComicLayout(layout: 'scroll' | 'paginated'): void {
+  sniffConfig.value.comicLayout = layout
+  saveSniffConfig()
+}
+
+/** 处理最小尺寸输入 */
+function onMinSizeInput(e: Event): void {
+  const val = parseInt((e.target as HTMLInputElement).value)
+  if (!isNaN(val) && val >= 0 && val <= 1000) {
+    sniffConfig.value.minImageSize = val
+  }
+}
+
+/** 最小尺寸输入失焦时保存并重新应用过滤 */
+function onMinSizeBlur(): void {
+  // 确保数值合理
+  if (sniffConfig.value.minImageSize < 0) sniffConfig.value.minImageSize = 0
+  if (sniffConfig.value.minImageSize > 1000) sniffConfig.value.minImageSize = 1000
+  saveSniffConfig()
+  // 重新应用过滤到已有图片
+  if (sniffConfig.value.filterSmallImages && images.value.length > 0) {
+    reapplyImageFilter()
+  }
+}
+
+/** 切换预览窗口配置 */
+async function toggleConfigPreview(): Promise<void> {
+  sniffConfig.value.showPreview = !sniffConfig.value.showPreview
+  saveSniffConfig()
+  // 如果正在嗅探，立即应用预览窗口的可见性
+  if (isSniffing.value) {
+    await window.electronAPI.sniffTogglePreview(sniffConfig.value.showPreview)
+  }
+}
+
+/** 保存配置到持久化存储 */
+function saveSniffConfig(): void {
+  window.electronAPI.storeSet('sniffConfig', JSON.parse(JSON.stringify(sniffConfig.value)))
+}
+
+/** 从持久化存储读取配置 */
+async function loadSniffConfig(): Promise<void> {
+  const saved = await window.electronAPI.storeGet('sniffConfig') as Partial<SniffConfig> | null
+  if (saved) {
+    if (typeof saved.showPreview === 'boolean') sniffConfig.value.showPreview = saved.showPreview
+    if (typeof saved.captureCanvas === 'boolean') sniffConfig.value.captureCanvas = saved.captureCanvas
+    if (saved.comicLayout === 'scroll' || saved.comicLayout === 'paginated') sniffConfig.value.comicLayout = saved.comicLayout
+    if (typeof saved.autoScrollOnStart === 'boolean') sniffConfig.value.autoScrollOnStart = saved.autoScrollOnStart
+    if (typeof saved.filterSmallImages === 'boolean') sniffConfig.value.filterSmallImages = saved.filterSmallImages
+    if (typeof saved.minImageSize === 'number' && saved.minImageSize >= 0 && saved.minImageSize <= 1000) {
+      sniffConfig.value.minImageSize = saved.minImageSize
+    }
+  }
+}
+
+/** 点击配置面板外部关闭 */
+function onConfigClickOutside(e: MouseEvent): void {
+  if (configWrapperRef.value && !configWrapperRef.value.contains(e.target as Node)) {
+    showConfigPanel.value = false
+  }
+}
 
 // ─── 保存模式 ───
 const saveMode = ref<'single' | 'series'>('single')
@@ -448,13 +674,6 @@ const allSelected = computed(() => {
 // ─── 预览窗口控制 ───
 let removeWindowClosedListener: (() => void) | null = null
 let removeUrlChangedListener: (() => void) | null = null
-
-/** 切换预览窗口显示/隐藏 */
-async function togglePreview(): Promise<void> {
-  const newVisible = !previewVisible.value
-  await window.electronAPI.sniffTogglePreview(newVisible)
-  previewVisible.value = newVisible
-}
 
 /** 聚焦到预览窗口（让用户手动操作） */
 async function focusPreview(): Promise<void> {
@@ -532,13 +751,18 @@ async function startSniff(): Promise<void> {
   selectedCanvasIdxs.value = new Set()
   isSniffing.value = true
 
+  // ★ 根据配置设置预览窗口可见性
+  await window.electronAPI.sniffTogglePreview(sniffConfig.value.showPreview)
+
   // 监听实时推送
   removeImageListener = window.electronAPI.onSniffImageFound((data) => {
     // 去重
     if (!images.value.find((i) => i.url === data.url)) {
       images.value.push(data)
-      // 默认全选
-      selectedUrls.value.add(data.url)
+      // 根据过滤配置决定是否默认勾选
+      if (shouldAutoSelect(data.size)) {
+        selectedUrls.value.add(data.url)
+      }
     }
   })
 
@@ -546,8 +770,24 @@ async function startSniff(): Promise<void> {
   removeImageUpdatedListener = window.electronAPI.onSniffImageUpdated((data) => {
     const existing = images.value.find((i) => i.url === data.url)
     if (existing) {
+      const hadSize = existing.size > 0
       existing.size = data.size
       existing.contentType = data.contentType
+      // 如果之前没有 size（首次获取到尺寸），重新判断是否应该勾选
+      if (!hadSize) {
+        if (shouldAutoSelect(data.size)) {
+          if (!selectedUrls.value.has(data.url)) {
+            selectedUrls.value.add(data.url)
+            selectedUrls.value = new Set(selectedUrls.value)
+          }
+        } else {
+          // 尺寸低于阈值，取消默认勾选
+          if (selectedUrls.value.has(data.url)) {
+            selectedUrls.value.delete(data.url)
+            selectedUrls.value = new Set(selectedUrls.value)
+          }
+        }
+      }
     }
   })
 
@@ -555,7 +795,7 @@ async function startSniff(): Promise<void> {
   if (removeWindowClosedListener) { removeWindowClosedListener(); removeWindowClosedListener = null }
   removeWindowClosedListener = window.electronAPI.onSniffWindowClosed(() => {
     isSniffing.value = false
-    previewVisible.value = false
+    sniffConfig.value.showPreview = false
     checkLoginStatus()
   })
 
@@ -578,6 +818,12 @@ async function startSniff(): Promise<void> {
   } else {
     showToast('页面加载完成，请在预览窗口操作或点击「自动滚动」加载更多', 'success')
   }
+
+  // ★ 根据配置自动执行滚动
+  if (ok && sniffConfig.value.autoScrollOnStart && sniffConfig.value.comicLayout === 'scroll') {
+    autoScroll()
+  }
+
   // 嗅探过程可能产生新 Cookie，刷新登录状态
   await checkLoginStatus()
 }
@@ -594,8 +840,8 @@ async function autoScroll(): Promise<void> {
   const result = await window.electronAPI.sniffAutoScroll()
   isScrolling.value = false
 
-  // 处理 Canvas 捕获结果
-  if (result.canvasDataUrls && result.canvasDataUrls.length > 0) {
+  // 根据配置处理 Canvas 捕获结果
+  if (sniffConfig.value.captureCanvas && result.canvasDataUrls && result.canvasDataUrls.length > 0) {
     const existing = new Set(canvasImages.value)
     let added = 0
     for (const d of result.canvasDataUrls) {
@@ -613,7 +859,9 @@ async function autoScroll(): Promise<void> {
 
   const parts: string[] = []
   if (result.newNetworkImages > 0) parts.push(`${result.newNetworkImages} 张网络图片`)
-  if (result.canvasDataUrls && result.canvasDataUrls.length > 0) parts.push(`${result.canvasDataUrls.length} 张 Canvas 图片`)
+  if (sniffConfig.value.captureCanvas && result.canvasDataUrls && result.canvasDataUrls.length > 0) {
+    parts.push(`${result.canvasDataUrls.length} 张 Canvas 图片`)
+  }
 
   if (parts.length > 0) {
     showToast(`滚动完成，新发现 ${parts.join('、')}`, 'success')
@@ -839,6 +1087,9 @@ function goBack(): void {
 }
 
 onMounted(() => {
+  // 加载嗅探配置
+  loadSniffConfig()
+
   // 如果有之前嗅探的残留图片，获取一下
   window.electronAPI.sniffGetImages().then((list) => {
     if (list.length > 0) {
@@ -847,6 +1098,7 @@ onMounted(() => {
     }
   })
   document.addEventListener('click', onClickOutside)
+  document.addEventListener('click', onConfigClickOutside)
 })
 
 onUnmounted(() => {
@@ -856,6 +1108,7 @@ onUnmounted(() => {
   if (removeWindowClosedListener) removeWindowClosedListener()
   if (removeUrlChangedListener) removeUrlChangedListener()
   document.removeEventListener('click', onClickOutside)
+  document.removeEventListener('click', onConfigClickOutside)
 })
 </script>
 
@@ -968,6 +1221,224 @@ onUnmounted(() => {
   padding: 0 2px;
   transition: color 0.15s;
   &:hover { color: @text-primary; }
+}
+
+// ── 配置按钮和面板 ──
+.config-wrapper {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.btn-config {
+  background: rgba(255, 255, 255, 0.04);
+  color: @text-muted;
+  border: 1px solid @border;
+  padding: 6px 10px;
+  border-radius: @radius-sm;
+  font-size: 12px;
+  font-weight: 600;
+  transition: all @transition;
+  &:hover { background: @bg-hover; color: @text-secondary; border-color: rgba(255, 255, 255, 0.15); }
+
+  &.active {
+    background: rgba(124, 58, 237, 0.15);
+    color: @accent-light;
+    border-color: rgba(124, 58, 237, 0.3);
+  }
+}
+
+.config-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 320px;
+  background: @bg-card;
+  border: 1px solid @border;
+  border-radius: @radius;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  z-index: 200;
+  padding: 14px;
+  .flex-col();
+  gap: 6px;
+}
+
+.config-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 700;
+  color: @text-primary;
+  padding-bottom: 10px;
+  border-bottom: 1px solid @border;
+  margin-bottom: 4px;
+
+  svg { color: @accent-light; }
+}
+
+.config-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 6px;
+  border-radius: @radius-sm;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  user-select: none;
+
+  &:hover { background: @bg-hover; }
+}
+
+.config-check {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 1.5px solid @text-muted;
+  .flex-center();
+  flex-shrink: 0;
+  margin-top: 1px;
+  transition: all 0.15s ease;
+
+  &.checked {
+    background: @accent;
+    border-color: @accent;
+
+    svg { color: #fff; }
+  }
+}
+
+.config-label {
+  .flex-col();
+  gap: 2px;
+  flex: 1;
+
+  > span:first-child {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: @text-primary;
+  }
+}
+
+.config-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+
+  > span:first-child {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: @text-primary;
+  }
+}
+
+.size-input-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.size-label {
+  font-size: 11px;
+  color: @text-muted;
+  font-weight: 500;
+}
+
+.size-input {
+  width: 46px;
+  height: 22px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid @border;
+  border-radius: 4px;
+  color: @text-primary;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+  outline: none;
+  transition: all 0.15s ease;
+  -moz-appearance: textfield;
+  appearance: textfield;
+
+  &::-webkit-inner-spin-button,
+  &::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  &:focus {
+    border-color: @accent;
+    background: rgba(124, 58, 237, 0.08);
+    box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.15);
+  }
+
+  &:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+}
+
+.config-desc {
+  font-size: 11px;
+  color: @text-muted;
+  line-height: 1.4;
+}
+
+.config-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: @text-muted;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 8px 6px 2px;
+}
+
+.config-radio-group {
+  .flex-col();
+  gap: 2px;
+}
+
+.config-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 7px 6px;
+  border-radius: @radius-sm;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  user-select: none;
+
+  &:hover { background: @bg-hover; }
+}
+
+.radio-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1.5px solid @text-muted;
+  .flex-center();
+  flex-shrink: 0;
+  margin-top: 2px;
+  transition: all 0.15s ease;
+
+  &.active {
+    border-color: @accent;
+
+    .radio-inner {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: @accent;
+    }
+  }
+}
+
+// ── 配置面板动画 ──
+.config-panel-enter-active { transition: all 0.2s ease; }
+.config-panel-leave-active { transition: all 0.15s ease; }
+.config-panel-enter-from, .config-panel-leave-to {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.97);
 }
 
 .btn-preview {
@@ -1132,6 +1603,24 @@ onUnmounted(() => {
   font-size: 12px;
 
   strong { color: @accent-light; font-weight: 700; }
+}
+
+.status-tag {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+
+  &.layout-tag {
+    background: rgba(59, 130, 246, 0.12);
+    color: rgb(96, 165, 250);
+  }
+
+  &.canvas-tag {
+    background: rgba(124, 58, 237, 0.12);
+    color: @accent-light;
+  }
 }
 
 .sniff-actions {
