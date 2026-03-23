@@ -92,11 +92,24 @@ interface ElectronAPI {
   sniffCheckLogin: (url: string) => Promise<{ hasCookies: boolean; cookieCount: number }>
   sniffClearCookies: (url?: string) => Promise<boolean>
   sniffGetImages: () => Promise<SniffedImage[]>
+  sniffProxyImage: (imageUrl: string) => Promise<string | null>
   sniffExecuteJS: (code: string) => Promise<unknown>
   sniffGetCurrentURL: () => Promise<string>
   sniffNavigate: (url: string) => Promise<boolean>
   sniffClearImages: () => Promise<void>
   sniffAutoScroll: () => Promise<{ newNetworkImages: number; canvasDataUrls: string[] }>
+  sniffPaginatePrecheck: () => Promise<{
+    success: boolean
+    method?: string
+    selector?: string
+    desc?: string
+    score?: number
+    signals?: string[]
+    reason?: string
+  }>
+  sniffAutoPaginate: (method: string, selector: string) => Promise<{ totalPages: number }>
+  sniffPaginateStop: () => Promise<void>
+  sniffPaginateStatus: () => Promise<{ page: number; running: boolean }>
   sniffCaptureCanvas: () => Promise<string[]>
   sniffScrollAndCapture: () => Promise<string[]>
   sniffSaveDataUrlsToLibrary: (dataUrls: string[], title: string, libraryDir: string) => Promise<boolean>
@@ -116,6 +129,7 @@ interface ElectronAPI {
   onSniffDownloadProgress: (callback: (data: DownloadProgress) => void) => () => void
   onSniffWindowClosed: (callback: () => void) => () => void
   onSniffUrlChanged: (callback: (url: string) => void) => () => void
+  onSniffPaginateProgress: (callback: (data: { page: number; running: boolean }) => void) => () => void
   // 持久化存储
   storeGet: (key: string) => Promise<unknown>
   storeSet: (key: string, value: unknown) => Promise<void>

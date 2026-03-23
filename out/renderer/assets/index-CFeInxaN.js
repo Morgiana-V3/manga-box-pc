@@ -12545,91 +12545,113 @@ const _hoisted_42 = {
   "stroke-width": "2",
   "stroke-linecap": "round"
 };
-const _hoisted_43 = {
+const _hoisted_43 = ["disabled"];
+const _hoisted_44 = {
+  key: 0,
+  class: "spinning",
+  width: "13",
+  height: "13",
+  viewBox: "0 0 24 24",
+  fill: "none",
+  stroke: "currentColor",
+  "stroke-width": "2",
+  "stroke-linecap": "round"
+};
+const _hoisted_45 = {
+  key: 1,
+  width: "13",
+  height: "13",
+  viewBox: "0 0 24 24",
+  fill: "none",
+  stroke: "currentColor",
+  "stroke-width": "2",
+  "stroke-linecap": "round"
+};
+const _hoisted_46 = {
   key: 1,
   class: "sniff-live-hint"
 };
-const _hoisted_44 = {
+const _hoisted_47 = {
   key: 2,
   class: "section-label"
 };
-const _hoisted_45 = {
+const _hoisted_48 = {
   key: 3,
   class: "image-grid"
 };
-const _hoisted_46 = ["onClick"];
-const _hoisted_47 = { class: "image-thumb" };
-const _hoisted_48 = ["src"];
-const _hoisted_49 = { class: "select-badge canvas-badge" };
-const _hoisted_50 = {
+const _hoisted_49 = ["onClick"];
+const _hoisted_50 = { class: "image-thumb" };
+const _hoisted_51 = ["src"];
+const _hoisted_52 = { class: "select-badge canvas-badge" };
+const _hoisted_53 = {
   key: 0,
   width: "16",
   height: "16",
   viewBox: "0 0 24 24",
   fill: "currentColor"
 };
-const _hoisted_51 = { key: 1 };
-const _hoisted_52 = { class: "image-info" };
-const _hoisted_53 = { class: "image-size" };
-const _hoisted_54 = {
+const _hoisted_54 = { key: 1 };
+const _hoisted_55 = { class: "image-info" };
+const _hoisted_56 = { class: "image-size" };
+const _hoisted_57 = {
   key: 4,
   class: "section-label"
 };
-const _hoisted_55 = {
+const _hoisted_58 = {
   key: 5,
   class: "image-grid"
 };
-const _hoisted_56 = ["onClick"];
-const _hoisted_57 = { class: "image-thumb" };
-const _hoisted_58 = ["src"];
-const _hoisted_59 = { class: "select-badge" };
-const _hoisted_60 = {
+const _hoisted_59 = ["onClick"];
+const _hoisted_60 = { class: "image-thumb" };
+const _hoisted_61 = ["src"];
+const _hoisted_62 = { class: "select-badge" };
+const _hoisted_63 = {
   key: 0,
   width: "16",
   height: "16",
   viewBox: "0 0 24 24",
   fill: "currentColor"
 };
-const _hoisted_61 = { key: 1 };
-const _hoisted_62 = { class: "image-info" };
-const _hoisted_63 = { class: "image-size" };
-const _hoisted_64 = {
+const _hoisted_64 = { key: 1 };
+const _hoisted_65 = { class: "image-info" };
+const _hoisted_66 = { class: "image-size" };
+const _hoisted_67 = {
   key: 6,
   class: "empty-state"
 };
-const _hoisted_65 = {
+const _hoisted_68 = {
   key: 7,
   class: "loading-state"
 };
-const _hoisted_66 = {
+const _hoisted_69 = {
   key: 0,
   class: "save-bar"
 };
-const _hoisted_67 = { class: "save-info" };
-const _hoisted_68 = {
+const _hoisted_70 = { class: "save-info" };
+const _hoisted_71 = {
   key: 0,
   class: "save-tag"
 };
-const _hoisted_69 = { class: "save-actions" };
-const _hoisted_70 = { class: "save-mode-select" };
-const _hoisted_71 = {
+const _hoisted_72 = { class: "save-actions" };
+const _hoisted_73 = { class: "save-mode-select" };
+const _hoisted_74 = {
   key: 0,
   class: "series-count"
 };
-const _hoisted_72 = {
+const _hoisted_75 = {
   key: 0,
   class: "series-dropdown"
 };
-const _hoisted_73 = {
+const _hoisted_76 = {
   key: 0,
   class: "dropdown-empty"
 };
-const _hoisted_74 = ["onClick"];
-const _hoisted_75 = { class: "series-name" };
-const _hoisted_76 = { class: "series-meta" };
-const _hoisted_77 = ["placeholder", "onKeydown"];
-const _hoisted_78 = ["disabled"];
-const _hoisted_79 = {
+const _hoisted_77 = ["onClick"];
+const _hoisted_78 = { class: "series-name" };
+const _hoisted_79 = { class: "series-meta" };
+const _hoisted_80 = ["placeholder", "onKeydown"];
+const _hoisted_81 = ["disabled"];
+const _hoisted_82 = {
   key: 0,
   class: "spinning",
   width: "13",
@@ -12888,12 +12910,21 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
       } else {
         showToast("页面加载完成，请在预览窗口操作或点击「自动滚动」加载更多", "success");
       }
-      if (ok && sniffConfig.value.autoScrollOnStart && sniffConfig.value.comicLayout === "scroll") {
-        autoScroll();
+      if (ok && sniffConfig.value.autoScrollOnStart) {
+        if (sniffConfig.value.comicLayout === "scroll") {
+          autoScroll();
+        } else if (sniffConfig.value.comicLayout === "paginated") {
+          startAutoPaginate();
+        }
       }
       await checkLoginStatus();
     }
     async function stopSniff() {
+      if (isPaginating.value) {
+        cleanupPaginateListener();
+        await window.electronAPI.sniffPaginateStop();
+        isPaginating.value = false;
+      }
       await window.electronAPI.sniffStop();
       isSniffing.value = false;
       if (removeImageListener) {
@@ -12933,6 +12964,55 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
         showToast(`滚动完成，新发现 ${parts.join("、")}`, "success");
       } else {
         showToast("滚动完成，未发现新图片", "success");
+      }
+    }
+    const isPaginating = /* @__PURE__ */ ref(false);
+    const paginatePageCount = /* @__PURE__ */ ref(0);
+    let removePaginateProgressListener = null;
+    async function startAutoPaginate() {
+      isPaginating.value = true;
+      paginatePageCount.value = 0;
+      showToast("正在预检翻页交互方式...", "success");
+      const precheck = await window.electronAPI.sniffPaginatePrecheck();
+      if (!precheck.success) {
+        isPaginating.value = false;
+        showToast("未检测到有效的翻页交互，可尝试在预览窗口手动翻页", "error");
+        return;
+      }
+      const methodDesc = precheck.method === "nextButton" ? "下一页按钮" : precheck.method === "clickImage" ? "点击漫画图片" : precheck.method === "clickReader" ? "点击阅读器容器" : "键盘方向键";
+      showToast(`预检成功！翻页方式：${methodDesc}（${precheck.signals?.join(", ")}），开始自动翻页...`, "success");
+      removePaginateProgressListener = window.electronAPI.onSniffPaginateProgress((data) => {
+        paginatePageCount.value = data.page;
+      });
+      try {
+        const result = await window.electronAPI.sniffAutoPaginate(
+          precheck.method,
+          precheck.selector
+        );
+        cleanupPaginateListener();
+        isPaginating.value = false;
+        paginatePageCount.value = result.totalPages;
+        if (result.totalPages > 0) {
+          showToast(`自动翻页完成，共翻了 ${result.totalPages} 页，已捕获 ${images.value.length} 张图片`, "success");
+        } else {
+          showToast("翻页完成，未检测到新页面（可能已是最后一页）", "success");
+        }
+      } catch {
+        cleanupPaginateListener();
+        isPaginating.value = false;
+        showToast("自动翻页过程中发生错误", "error");
+      }
+    }
+    async function stopPaginate() {
+      cleanupPaginateListener();
+      await window.electronAPI.sniffPaginateStop();
+      isPaginating.value = false;
+      showToast(`已停止自动翻页（已翻 ${paginatePageCount.value} 页）`, "success");
+    }
+    function cleanupPaginateListener() {
+      if (removePaginateProgressListener) {
+        removePaginateProgressListener();
+        removePaginateProgressListener = null;
       }
     }
     function clearImages() {
@@ -13131,6 +13211,7 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
       if (removeProgressListener) removeProgressListener();
       if (removeWindowClosedListener) removeWindowClosedListener();
       if (removeUrlChangedListener) removeUrlChangedListener();
+      cleanupPaginateListener();
       document.removeEventListener("click", onClickOutside);
       document.removeEventListener("click", onConfigClickOutside);
     });
@@ -13140,7 +13221,7 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
           createBaseVNode("button", {
             class: "back-btn",
             onClick: goBack
-          }, [..._cache[14] || (_cache[14] = [
+          }, [..._cache[15] || (_cache[15] = [
             createBaseVNode("svg", {
               width: "16",
               height: "16",
@@ -13153,7 +13234,7 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
               createBaseVNode("polyline", { points: "15 18 9 12 15 6" })
             ], -1)
           ])]),
-          _cache[15] || (_cache[15] = createBaseVNode("div", { class: "header-info" }, [
+          _cache[16] || (_cache[16] = createBaseVNode("div", { class: "header-info" }, [
             createBaseVNode("h2", null, "在线抓取"),
             createBaseVNode("span", { class: "header-sub" }, "输入网址，自动嗅探页面中的漫画图片")
           ], -1))
@@ -13161,7 +13242,7 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
         createBaseVNode("div", _hoisted_2$1, [
           createBaseVNode("div", _hoisted_3, [
             createBaseVNode("div", _hoisted_4, [
-              _cache[34] || (_cache[34] = createBaseVNode("svg", {
+              _cache[35] || (_cache[35] = createBaseVNode("svg", {
                 class: "url-icon",
                 width: "16",
                 height: "16",
@@ -13201,7 +13282,7 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                   class: normalizeClass(["btn btn-config btn-sm", { active: showConfigPanel.value }]),
                   onClick: _cache[1] || (_cache[1] = ($event) => showConfigPanel.value = !showConfigPanel.value),
                   title: "嗅探配置"
-                }, [..._cache[16] || (_cache[16] = [
+                }, [..._cache[17] || (_cache[17] = [
                   createBaseVNode("svg", {
                     width: "14",
                     height: "14",
@@ -13218,7 +13299,7 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                 createVNode(Transition, { name: "config-panel" }, {
                   default: withCtx(() => [
                     showConfigPanel.value ? (openBlock(), createElementBlock("div", _hoisted_6, [
-                      _cache[30] || (_cache[30] = createBaseVNode("div", { class: "config-title" }, [
+                      _cache[31] || (_cache[31] = createBaseVNode("div", { class: "config-title" }, [
                         createBaseVNode("svg", {
                           width: "13",
                           height: "13",
@@ -13245,11 +13326,11 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                         createBaseVNode("div", {
                           class: normalizeClass(["config-check", { checked: sniffConfig.value.showPreview }])
                         }, [
-                          sniffConfig.value.showPreview ? (openBlock(), createElementBlock("svg", _hoisted_7, [..._cache[17] || (_cache[17] = [
+                          sniffConfig.value.showPreview ? (openBlock(), createElementBlock("svg", _hoisted_7, [..._cache[18] || (_cache[18] = [
                             createBaseVNode("polyline", { points: "20 6 9 17 4 12" }, null, -1)
                           ])])) : createCommentVNode("", true)
                         ], 2),
-                        _cache[18] || (_cache[18] = createBaseVNode("div", { class: "config-label" }, [
+                        _cache[19] || (_cache[19] = createBaseVNode("div", { class: "config-label" }, [
                           createBaseVNode("span", null, "打开预览窗口"),
                           createBaseVNode("span", { class: "config-desc" }, "嗅探时显示可视化预览，可手动操作页面")
                         ], -1))
@@ -13261,16 +13342,16 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                         createBaseVNode("div", {
                           class: normalizeClass(["config-check", { checked: sniffConfig.value.captureCanvas }])
                         }, [
-                          sniffConfig.value.captureCanvas ? (openBlock(), createElementBlock("svg", _hoisted_8, [..._cache[19] || (_cache[19] = [
+                          sniffConfig.value.captureCanvas ? (openBlock(), createElementBlock("svg", _hoisted_8, [..._cache[20] || (_cache[20] = [
                             createBaseVNode("polyline", { points: "20 6 9 17 4 12" }, null, -1)
                           ])])) : createCommentVNode("", true)
                         ], 2),
-                        _cache[20] || (_cache[20] = createBaseVNode("div", { class: "config-label" }, [
+                        _cache[21] || (_cache[21] = createBaseVNode("div", { class: "config-label" }, [
                           createBaseVNode("span", null, "捕获 Canvas 图片"),
                           createBaseVNode("span", { class: "config-desc" }, "适用于使用 Canvas 渲染漫画的网站")
                         ], -1))
                       ]),
-                      _cache[31] || (_cache[31] = createBaseVNode("div", { class: "config-section-label" }, "漫画布局类型", -1)),
+                      _cache[32] || (_cache[32] = createBaseVNode("div", { class: "config-section-label" }, "漫画布局类型", -1)),
                       createBaseVNode("div", _hoisted_9, [
                         createBaseVNode("label", {
                           class: "config-radio",
@@ -13281,7 +13362,7 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                           }, [
                             sniffConfig.value.comicLayout === "scroll" ? (openBlock(), createElementBlock("div", _hoisted_10)) : createCommentVNode("", true)
                           ], 2),
-                          _cache[21] || (_cache[21] = createBaseVNode("div", { class: "config-label" }, [
+                          _cache[22] || (_cache[22] = createBaseVNode("div", { class: "config-label" }, [
                             createBaseVNode("span", null, "滚动式（条漫）"),
                             createBaseVNode("span", { class: "config-desc" }, "长页面上下滚动加载，自动滚动到底")
                           ], -1))
@@ -13295,7 +13376,7 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                           }, [
                             sniffConfig.value.comicLayout === "paginated" ? (openBlock(), createElementBlock("div", _hoisted_11)) : createCommentVNode("", true)
                           ], 2),
-                          _cache[22] || (_cache[22] = createBaseVNode("div", { class: "config-label" }, [
+                          _cache[23] || (_cache[23] = createBaseVNode("div", { class: "config-label" }, [
                             createBaseVNode("span", null, "分页式（翻页漫画）"),
                             createBaseVNode("span", { class: "config-desc" }, "点击/键盘翻页，逐页加载图片")
                           ], -1))
@@ -13308,11 +13389,11 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                         createBaseVNode("div", {
                           class: normalizeClass(["config-check", { checked: sniffConfig.value.autoScrollOnStart }])
                         }, [
-                          sniffConfig.value.autoScrollOnStart ? (openBlock(), createElementBlock("svg", _hoisted_12, [..._cache[23] || (_cache[23] = [
+                          sniffConfig.value.autoScrollOnStart ? (openBlock(), createElementBlock("svg", _hoisted_12, [..._cache[24] || (_cache[24] = [
                             createBaseVNode("polyline", { points: "20 6 9 17 4 12" }, null, -1)
                           ])])) : createCommentVNode("", true)
                         ], 2),
-                        _cache[24] || (_cache[24] = createBaseVNode("div", { class: "config-label" }, [
+                        _cache[25] || (_cache[25] = createBaseVNode("div", { class: "config-label" }, [
                           createBaseVNode("span", null, "嗅探后自动滚动"),
                           createBaseVNode("span", { class: "config-desc" }, "开始嗅探后自动执行滚动，触发懒加载图片")
                         ], -1))
@@ -13324,19 +13405,19 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                         createBaseVNode("div", {
                           class: normalizeClass(["config-check", { checked: sniffConfig.value.filterSmallImages }])
                         }, [
-                          sniffConfig.value.filterSmallImages ? (openBlock(), createElementBlock("svg", _hoisted_13, [..._cache[25] || (_cache[25] = [
+                          sniffConfig.value.filterSmallImages ? (openBlock(), createElementBlock("svg", _hoisted_13, [..._cache[26] || (_cache[26] = [
                             createBaseVNode("polyline", { points: "20 6 9 17 4 12" }, null, -1)
                           ])])) : createCommentVNode("", true)
                         ], 2),
                         createBaseVNode("div", _hoisted_14, [
                           createBaseVNode("div", _hoisted_15, [
-                            _cache[28] || (_cache[28] = createBaseVNode("span", null, "过滤小图片", -1)),
+                            _cache[29] || (_cache[29] = createBaseVNode("span", null, "过滤小图片", -1)),
                             createBaseVNode("div", {
                               class: "size-input-group",
                               onClick: _cache[7] || (_cache[7] = withModifiers(() => {
                               }, ["stop"]))
                             }, [
-                              _cache[26] || (_cache[26] = createBaseVNode("span", { class: "size-label" }, "≤", -1)),
+                              _cache[27] || (_cache[27] = createBaseVNode("span", { class: "size-label" }, "≤", -1)),
                               createBaseVNode("input", {
                                 class: "size-input",
                                 type: "number",
@@ -13347,10 +13428,10 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                                 onInput: _cache[6] || (_cache[6] = ($event) => onMinSizeInput($event)),
                                 onBlur: onMinSizeBlur
                               }, null, 40, _hoisted_16),
-                              _cache[27] || (_cache[27] = createBaseVNode("span", { class: "size-label" }, "KB", -1))
+                              _cache[28] || (_cache[28] = createBaseVNode("span", { class: "size-label" }, "KB", -1))
                             ])
                           ]),
-                          _cache[29] || (_cache[29] = createBaseVNode("span", { class: "config-desc" }, "小于阈值的图片自动取消勾选，仍会展示在列表中", -1))
+                          _cache[30] || (_cache[30] = createBaseVNode("span", { class: "config-desc" }, "小于阈值的图片自动取消勾选，仍会展示在列表中", -1))
                         ])
                       ])
                     ])) : createCommentVNode("", true)
@@ -13363,7 +13444,7 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                 class: "btn btn-primary btn-sm",
                 disabled: !inputUrl.value.trim(),
                 onClick: startSniff
-              }, [..._cache[32] || (_cache[32] = [
+              }, [..._cache[33] || (_cache[33] = [
                 createBaseVNode("svg", {
                   width: "14",
                   height: "14",
@@ -13390,7 +13471,7 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                 key: 1,
                 class: "btn btn-ghost btn-sm",
                 onClick: stopSniff
-              }, [..._cache[33] || (_cache[33] = [
+              }, [..._cache[34] || (_cache[34] = [
                 createBaseVNode("svg", {
                   width: "14",
                   height: "14",
@@ -13414,21 +13495,21 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
             createBaseVNode("div", _hoisted_18, [
               createBaseVNode("p", _hoisted_19, [
                 isSniffing.value ? (openBlock(), createElementBlock(Fragment, { key: 0 }, [
-                  _cache[35] || (_cache[35] = createTextVNode(" 嗅探器", -1)),
-                  _cache[36] || (_cache[36] = createBaseVNode("strong", null, "持续监听中", -1)),
-                  _cache[37] || (_cache[37] = createTextVNode(" — 可在预览窗口手动滚动、翻页、登录，新图片会自动录入。 ", -1))
+                  _cache[36] || (_cache[36] = createTextVNode(" 嗅探器", -1)),
+                  _cache[37] || (_cache[37] = createBaseVNode("strong", null, "持续监听中", -1)),
+                  _cache[38] || (_cache[38] = createTextVNode(" — 可在预览窗口手动滚动、翻页、登录，新图片会自动录入。 ", -1))
                 ], 64)) : sniffConfig.value.showPreview ? (openBlock(), createElementBlock(Fragment, { key: 1 }, [
                   createTextVNode(" 预览窗口已启用 — 嗅探时会打开可视化窗口，可在预览中直接浏览、登录。 ")
                 ], 64)) : (openBlock(), createElementBlock(Fragment, { key: 2 }, [
-                  _cache[39] || (_cache[39] = createTextVNode(" 嗅探器会在后台打开网页，自动拦截所有图片资源。可通过 ", -1)),
-                  (openBlock(), createElementBlock("svg", _hoisted_20, [..._cache[38] || (_cache[38] = [
+                  _cache[40] || (_cache[40] = createTextVNode(" 嗅探器会在后台打开网页，自动拦截所有图片资源。可通过 ", -1)),
+                  (openBlock(), createElementBlock("svg", _hoisted_20, [..._cache[39] || (_cache[39] = [
                     createBaseVNode("path", { d: "M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z" }, null, -1)
                   ])])),
-                  _cache[40] || (_cache[40] = createTextVNode(" 配置开启预览窗口。 ", -1))
+                  _cache[41] || (_cache[41] = createTextVNode(" 配置开启预览窗口。 ", -1))
                 ], 64))
               ]),
               loginStatus.value.hasCookies ? (openBlock(), createElementBlock("p", _hoisted_21, [
-                _cache[41] || (_cache[41] = createBaseVNode("svg", {
+                _cache[42] || (_cache[42] = createBaseVNode("svg", {
                   width: "12",
                   height: "12",
                   viewBox: "0 0 24 24",
@@ -13453,13 +13534,13 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
               isSniffing.value ? (openBlock(), createElementBlock("div", _hoisted_24)) : (openBlock(), createElementBlock("div", _hoisted_25)),
               createBaseVNode("span", null, toDisplayString(isSniffing.value ? "持续监听中..." : "嗅探已停止"), 1),
               createBaseVNode("span", _hoisted_26, [
-                _cache[44] || (_cache[44] = createTextVNode(" 网络图片 ", -1)),
+                _cache[45] || (_cache[45] = createTextVNode(" 网络图片 ", -1)),
                 createBaseVNode("strong", null, toDisplayString(images.value.length), 1),
-                _cache[45] || (_cache[45] = createTextVNode(" 张 ", -1)),
+                _cache[46] || (_cache[46] = createTextVNode(" 张 ", -1)),
                 canvasImages.value.length > 0 ? (openBlock(), createElementBlock(Fragment, { key: 0 }, [
-                  _cache[42] || (_cache[42] = createTextVNode("  | Canvas ", -1)),
+                  _cache[43] || (_cache[43] = createTextVNode("  | Canvas ", -1)),
                   createBaseVNode("strong", null, toDisplayString(canvasImages.value.length), 1),
-                  _cache[43] || (_cache[43] = createTextVNode(" 张 ", -1))
+                  _cache[44] || (_cache[44] = createTextVNode(" 张 ", -1))
                 ], 64)) : createCommentVNode("", true)
               ]),
               sniffConfig.value.comicLayout === "paginated" ? (openBlock(), createElementBlock("span", _hoisted_27, "分页式")) : (openBlock(), createElementBlock("span", _hoisted_28, "滚动式")),
@@ -13473,10 +13554,10 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                 onClick: triggerRescan,
                 title: "手动触发懒加载，抓取预览窗口中新出现的图片"
               }, [
-                isScanning.value ? (openBlock(), createElementBlock("svg", _hoisted_32, [..._cache[46] || (_cache[46] = [
+                isScanning.value ? (openBlock(), createElementBlock("svg", _hoisted_32, [..._cache[47] || (_cache[47] = [
                   createBaseVNode("polyline", { points: "23 4 23 10 17 10" }, null, -1),
                   createBaseVNode("path", { d: "M20.49 15a9 9 0 11-2.12-9.36L23 10" }, null, -1)
-                ])])) : (openBlock(), createElementBlock("svg", _hoisted_33, [..._cache[47] || (_cache[47] = [
+                ])])) : (openBlock(), createElementBlock("svg", _hoisted_33, [..._cache[48] || (_cache[48] = [
                   createBaseVNode("polyline", { points: "23 4 23 10 17 10" }, null, -1),
                   createBaseVNode("path", { d: "M20.49 15a9 9 0 11-2.12-9.36L23 10" }, null, -1)
                 ])])),
@@ -13488,10 +13569,10 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                 disabled: isScrolling.value,
                 onClick: autoScroll
               }, [
-                isScrolling.value ? (openBlock(), createElementBlock("svg", _hoisted_35, [..._cache[48] || (_cache[48] = [
+                isScrolling.value ? (openBlock(), createElementBlock("svg", _hoisted_35, [..._cache[49] || (_cache[49] = [
                   createBaseVNode("polyline", { points: "23 4 23 10 17 10" }, null, -1),
                   createBaseVNode("path", { d: "M20.49 15a9 9 0 11-2.12-9.36L23 10" }, null, -1)
-                ])])) : (openBlock(), createElementBlock("svg", _hoisted_36, [..._cache[49] || (_cache[49] = [
+                ])])) : (openBlock(), createElementBlock("svg", _hoisted_36, [..._cache[50] || (_cache[50] = [
                   createBaseVNode("line", {
                     x1: "12",
                     y1: "5",
@@ -13502,16 +13583,30 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                 ])])),
                 createTextVNode(" " + toDisplayString(isScrolling.value ? "滚动中..." : "自动滚动"), 1)
               ], 8, _hoisted_34)) : createCommentVNode("", true),
-              isSniffing.value && sniffConfig.value.captureCanvas ? (openBlock(), createElementBlock("button", {
+              isSniffing.value && sniffConfig.value.comicLayout === "paginated" ? (openBlock(), createElementBlock("button", {
                 key: 2,
+                class: "btn btn-accent btn-sm",
+                disabled: isPaginating.value,
+                onClick: _cache[9] || (_cache[9] = ($event) => isPaginating.value ? stopPaginate() : startAutoPaginate())
+              }, [
+                isPaginating.value ? (openBlock(), createElementBlock("svg", _hoisted_38, [..._cache[51] || (_cache[51] = [
+                  createBaseVNode("polyline", { points: "23 4 23 10 17 10" }, null, -1),
+                  createBaseVNode("path", { d: "M20.49 15a9 9 0 11-2.12-9.36L23 10" }, null, -1)
+                ])])) : (openBlock(), createElementBlock("svg", _hoisted_39, [..._cache[52] || (_cache[52] = [
+                  createBaseVNode("polyline", { points: "9 18 15 12 9 6" }, null, -1)
+                ])])),
+                createTextVNode(" " + toDisplayString(isPaginating.value ? `翻页中(${paginatePageCount.value}页)...` : "自动翻页"), 1)
+              ], 8, _hoisted_37)) : createCommentVNode("", true),
+              isSniffing.value && sniffConfig.value.captureCanvas ? (openBlock(), createElementBlock("button", {
+                key: 3,
                 class: "btn btn-accent btn-sm",
                 disabled: isCapturing.value,
                 onClick: captureCanvas
               }, [
-                isCapturing.value ? (openBlock(), createElementBlock("svg", _hoisted_38, [..._cache[50] || (_cache[50] = [
+                isCapturing.value ? (openBlock(), createElementBlock("svg", _hoisted_41, [..._cache[53] || (_cache[53] = [
                   createBaseVNode("polyline", { points: "23 4 23 10 17 10" }, null, -1),
                   createBaseVNode("path", { d: "M20.49 15a9 9 0 11-2.12-9.36L23 10" }, null, -1)
-                ])])) : (openBlock(), createElementBlock("svg", _hoisted_39, [..._cache[51] || (_cache[51] = [
+                ])])) : (openBlock(), createElementBlock("svg", _hoisted_42, [..._cache[54] || (_cache[54] = [
                   createBaseVNode("rect", {
                     x: "3",
                     y: "3",
@@ -13527,17 +13622,17 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                   createBaseVNode("polyline", { points: "21 15 16 10 5 21" }, null, -1)
                 ])])),
                 createTextVNode(" " + toDisplayString(isCapturing.value ? "捕获中..." : "捕获Canvas"), 1)
-              ], 8, _hoisted_37)) : createCommentVNode("", true),
+              ], 8, _hoisted_40)) : createCommentVNode("", true),
               isSniffing.value && sniffConfig.value.captureCanvas ? (openBlock(), createElementBlock("button", {
-                key: 3,
+                key: 4,
                 class: "btn btn-accent btn-sm",
                 disabled: isCapturing.value,
                 onClick: scrollAndCapture
               }, [
-                isCapturing.value ? (openBlock(), createElementBlock("svg", _hoisted_41, [..._cache[52] || (_cache[52] = [
+                isCapturing.value ? (openBlock(), createElementBlock("svg", _hoisted_44, [..._cache[55] || (_cache[55] = [
                   createBaseVNode("polyline", { points: "23 4 23 10 17 10" }, null, -1),
                   createBaseVNode("path", { d: "M20.49 15a9 9 0 11-2.12-9.36L23 10" }, null, -1)
-                ])])) : (openBlock(), createElementBlock("svg", _hoisted_42, [..._cache[53] || (_cache[53] = [
+                ])])) : (openBlock(), createElementBlock("svg", _hoisted_45, [..._cache[56] || (_cache[56] = [
                   createBaseVNode("line", {
                     x1: "12",
                     y1: "5",
@@ -13554,21 +13649,21 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                   }, null, -1)
                 ])])),
                 createTextVNode(" " + toDisplayString(isCapturing.value ? "捕获中..." : "滚动+捕获"), 1)
-              ], 8, _hoisted_40)) : createCommentVNode("", true),
+              ], 8, _hoisted_43)) : createCommentVNode("", true),
               images.value.length > 0 || canvasImages.value.length > 0 ? (openBlock(), createElementBlock("button", {
-                key: 4,
+                key: 5,
                 class: "btn btn-ghost btn-sm",
                 onClick: toggleSelectAll
               }, toDisplayString(allSelected.value ? "取消全选" : "全选"), 1)) : createCommentVNode("", true),
               images.value.length > 0 || canvasImages.value.length > 0 ? (openBlock(), createElementBlock("button", {
-                key: 5,
+                key: 6,
                 class: "btn btn-ghost btn-sm",
                 onClick: clearImages
               }, " 清空列表 ")) : createCommentVNode("", true)
             ])
           ])) : createCommentVNode("", true),
-          isSniffing.value ? (openBlock(), createElementBlock("div", _hoisted_43, [
-            _cache[55] || (_cache[55] = createBaseVNode("svg", {
+          isSniffing.value ? (openBlock(), createElementBlock("div", _hoisted_46, [
+            _cache[58] || (_cache[58] = createBaseVNode("svg", {
               width: "14",
               height: "14",
               viewBox: "0 0 24 24",
@@ -13595,7 +13690,7 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                 y2: "8"
               })
             ], -1)),
-            _cache[56] || (_cache[56] = createBaseVNode("span", null, [
+            _cache[59] || (_cache[59] = createBaseVNode("span", null, [
               createTextVNode(" 嗅探器正在"),
               createBaseVNode("strong", null, "持续监听"),
               createTextVNode("。你可以在预览窗口中手动滚动、翻页、点击——新加载的图片会自动录入。 如有遗漏可点击「重新扫描」。 ")
@@ -13603,7 +13698,7 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
             createBaseVNode("button", {
               class: "link-btn focus-btn",
               onClick: focusPreview
-            }, [..._cache[54] || (_cache[54] = [
+            }, [..._cache[57] || (_cache[57] = [
               createBaseVNode("svg", {
                 width: "12",
                 height: "12",
@@ -13625,8 +13720,8 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
               createTextVNode(" 切到预览窗口 ", -1)
             ])])
           ])) : createCommentVNode("", true),
-          canvasImages.value.length > 0 ? (openBlock(), createElementBlock("div", _hoisted_44, [
-            _cache[57] || (_cache[57] = createBaseVNode("svg", {
+          canvasImages.value.length > 0 ? (openBlock(), createElementBlock("div", _hoisted_47, [
+            _cache[60] || (_cache[60] = createBaseVNode("svg", {
               width: "14",
               height: "14",
               viewBox: "0 0 24 24",
@@ -13651,34 +13746,34 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
             ], -1)),
             createTextVNode(" Canvas 捕获（" + toDisplayString(canvasImages.value.length) + " 张） ", 1)
           ])) : createCommentVNode("", true),
-          canvasImages.value.length > 0 ? (openBlock(), createElementBlock("div", _hoisted_45, [
+          canvasImages.value.length > 0 ? (openBlock(), createElementBlock("div", _hoisted_48, [
             (openBlock(true), createElementBlock(Fragment, null, renderList(canvasImages.value, (dataUrl, idx) => {
               return openBlock(), createElementBlock("div", {
                 key: "canvas-" + idx,
                 class: normalizeClass(["image-card", { selected: selectedCanvasIdxs.value.has(idx) }]),
                 onClick: ($event) => toggleCanvasSelect(idx)
               }, [
-                createBaseVNode("div", _hoisted_47, [
+                createBaseVNode("div", _hoisted_50, [
                   createBaseVNode("img", {
                     src: dataUrl,
                     loading: "lazy",
                     draggable: "false",
                     onError: onImgError
-                  }, null, 40, _hoisted_48),
-                  createBaseVNode("div", _hoisted_49, [
-                    selectedCanvasIdxs.value.has(idx) ? (openBlock(), createElementBlock("svg", _hoisted_50, [..._cache[58] || (_cache[58] = [
+                  }, null, 40, _hoisted_51),
+                  createBaseVNode("div", _hoisted_52, [
+                    selectedCanvasIdxs.value.has(idx) ? (openBlock(), createElementBlock("svg", _hoisted_53, [..._cache[61] || (_cache[61] = [
                       createBaseVNode("path", { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z" }, null, -1)
-                    ])])) : (openBlock(), createElementBlock("span", _hoisted_51, "C" + toDisplayString(idx + 1), 1))
+                    ])])) : (openBlock(), createElementBlock("span", _hoisted_54, "C" + toDisplayString(idx + 1), 1))
                   ])
                 ]),
-                createBaseVNode("div", _hoisted_52, [
-                  createBaseVNode("span", _hoisted_53, toDisplayString(formatDataUrlSize(dataUrl)), 1)
+                createBaseVNode("div", _hoisted_55, [
+                  createBaseVNode("span", _hoisted_56, toDisplayString(formatDataUrlSize(dataUrl)), 1)
                 ])
-              ], 10, _hoisted_46);
+              ], 10, _hoisted_49);
             }), 128))
           ])) : createCommentVNode("", true),
-          images.value.length > 0 && canvasImages.value.length > 0 ? (openBlock(), createElementBlock("div", _hoisted_54, [
-            _cache[59] || (_cache[59] = createBaseVNode("svg", {
+          images.value.length > 0 && canvasImages.value.length > 0 ? (openBlock(), createElementBlock("div", _hoisted_57, [
+            _cache[62] || (_cache[62] = createBaseVNode("svg", {
               width: "14",
               height: "14",
               viewBox: "0 0 24 24",
@@ -13702,54 +13797,54 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
             ], -1)),
             createTextVNode(" 网络嗅探（" + toDisplayString(images.value.length) + " 张） ", 1)
           ])) : createCommentVNode("", true),
-          images.value.length > 0 ? (openBlock(), createElementBlock("div", _hoisted_55, [
+          images.value.length > 0 ? (openBlock(), createElementBlock("div", _hoisted_58, [
             (openBlock(true), createElementBlock(Fragment, null, renderList(images.value, (img, idx) => {
               return openBlock(), createElementBlock("div", {
                 key: img.url,
                 class: normalizeClass(["image-card", { selected: selectedUrls.value.has(img.url) }]),
                 onClick: ($event) => toggleSelect(img.url)
               }, [
-                createBaseVNode("div", _hoisted_57, [
+                createBaseVNode("div", _hoisted_60, [
                   createBaseVNode("img", {
                     src: img.url,
                     loading: "lazy",
                     draggable: "false",
                     onError: onImgError
-                  }, null, 40, _hoisted_58),
-                  createBaseVNode("div", _hoisted_59, [
-                    selectedUrls.value.has(img.url) ? (openBlock(), createElementBlock("svg", _hoisted_60, [..._cache[60] || (_cache[60] = [
+                  }, null, 40, _hoisted_61),
+                  createBaseVNode("div", _hoisted_62, [
+                    selectedUrls.value.has(img.url) ? (openBlock(), createElementBlock("svg", _hoisted_63, [..._cache[63] || (_cache[63] = [
                       createBaseVNode("path", { d: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z" }, null, -1)
-                    ])])) : (openBlock(), createElementBlock("span", _hoisted_61, toDisplayString(idx + 1), 1))
+                    ])])) : (openBlock(), createElementBlock("span", _hoisted_64, toDisplayString(idx + 1), 1))
                   ])
                 ]),
-                createBaseVNode("div", _hoisted_62, [
-                  createBaseVNode("span", _hoisted_63, toDisplayString(formatSize(img.size)), 1)
+                createBaseVNode("div", _hoisted_65, [
+                  createBaseVNode("span", _hoisted_66, toDisplayString(formatSize(img.size)), 1)
                 ])
-              ], 10, _hoisted_56);
+              ], 10, _hoisted_59);
             }), 128))
-          ])) : !isSniffing.value && canvasImages.value.length === 0 ? (openBlock(), createElementBlock("div", _hoisted_64, [..._cache[61] || (_cache[61] = [
-            createStaticVNode('<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" data-v-2ee3b3bb><circle cx="11" cy="11" r="8" data-v-2ee3b3bb></circle><line x1="21" y1="21" x2="16.65" y2="16.65" data-v-2ee3b3bb></line><line x1="8" y1="11" x2="14" y2="11" data-v-2ee3b3bb></line><line x1="11" y1="8" x2="11" y2="14" data-v-2ee3b3bb></line></svg><h3 data-v-2ee3b3bb>输入网址开始抓取</h3><p data-v-2ee3b3bb>粘贴任意漫画网页的 URL，嗅探器会自动捕获页面中加载的所有图片资源</p>', 3)
-          ])])) : isSniffing.value && images.value.length === 0 && canvasImages.value.length === 0 ? (openBlock(), createElementBlock("div", _hoisted_65, [..._cache[62] || (_cache[62] = [
+          ])) : !isSniffing.value && canvasImages.value.length === 0 ? (openBlock(), createElementBlock("div", _hoisted_67, [..._cache[64] || (_cache[64] = [
+            createStaticVNode('<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" data-v-02bc6b21><circle cx="11" cy="11" r="8" data-v-02bc6b21></circle><line x1="21" y1="21" x2="16.65" y2="16.65" data-v-02bc6b21></line><line x1="8" y1="11" x2="14" y2="11" data-v-02bc6b21></line><line x1="11" y1="8" x2="11" y2="14" data-v-02bc6b21></line></svg><h3 data-v-02bc6b21>输入网址开始抓取</h3><p data-v-02bc6b21>粘贴任意漫画网页的 URL，嗅探器会自动捕获页面中加载的所有图片资源</p>', 3)
+          ])])) : isSniffing.value && images.value.length === 0 && canvasImages.value.length === 0 ? (openBlock(), createElementBlock("div", _hoisted_68, [..._cache[65] || (_cache[65] = [
             createBaseVNode("div", { class: "spinner" }, null, -1),
             createBaseVNode("p", null, "正在加载页面并嗅探图片...", -1)
           ])])) : createCommentVNode("", true)
         ]),
         createVNode(Transition, { name: "bar-slide" }, {
           default: withCtx(() => [
-            totalSelected.value > 0 ? (openBlock(), createElementBlock("div", _hoisted_66, [
-              createBaseVNode("div", _hoisted_67, [
+            totalSelected.value > 0 ? (openBlock(), createElementBlock("div", _hoisted_69, [
+              createBaseVNode("div", _hoisted_70, [
                 createBaseVNode("span", null, [
-                  _cache[63] || (_cache[63] = createTextVNode("已选择 ", -1)),
+                  _cache[66] || (_cache[66] = createTextVNode("已选择 ", -1)),
                   createBaseVNode("strong", null, toDisplayString(totalSelected.value), 1),
-                  _cache[64] || (_cache[64] = createTextVNode(" 张图片", -1))
+                  _cache[67] || (_cache[67] = createTextVNode(" 张图片", -1))
                 ]),
-                selectedCanvasIdxs.value.size > 0 ? (openBlock(), createElementBlock("span", _hoisted_68, "含 " + toDisplayString(selectedCanvasIdxs.value.size) + " 张 Canvas", 1)) : createCommentVNode("", true)
+                selectedCanvasIdxs.value.size > 0 ? (openBlock(), createElementBlock("span", _hoisted_71, "含 " + toDisplayString(selectedCanvasIdxs.value.size) + " 张 Canvas", 1)) : createCommentVNode("", true)
               ]),
-              createBaseVNode("div", _hoisted_69, [
-                createBaseVNode("div", _hoisted_70, [
+              createBaseVNode("div", _hoisted_72, [
+                createBaseVNode("div", _hoisted_73, [
                   createBaseVNode("button", {
                     class: normalizeClass(["mode-btn", { active: saveMode.value === "single" }]),
-                    onClick: _cache[9] || (_cache[9] = ($event) => saveMode.value = "single")
+                    onClick: _cache[10] || (_cache[10] = ($event) => saveMode.value = "single")
                   }, "单话", 2),
                   createBaseVNode("button", {
                     class: normalizeClass(["mode-btn", { active: saveMode.value === "series" }]),
@@ -13764,9 +13859,9 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                 }, [
                   createBaseVNode("div", {
                     class: "series-input-wrap",
-                    onClick: _cache[12] || (_cache[12] = ($event) => showSeriesDropdown.value = true)
+                    onClick: _cache[13] || (_cache[13] = ($event) => showSeriesDropdown.value = true)
                   }, [
-                    _cache[66] || (_cache[66] = createBaseVNode("svg", {
+                    _cache[69] || (_cache[69] = createBaseVNode("svg", {
                       width: "13",
                       height: "13",
                       viewBox: "0 0 24 24",
@@ -13778,16 +13873,16 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                       createBaseVNode("path", { d: "M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" })
                     ], -1)),
                     withDirectives(createBaseVNode("input", {
-                      "onUpdate:modelValue": _cache[10] || (_cache[10] = ($event) => seriesSearchText.value = $event),
+                      "onUpdate:modelValue": _cache[11] || (_cache[11] = ($event) => seriesSearchText.value = $event),
                       class: "series-input",
                       type: "text",
                       placeholder: "搜索或新建系列...",
-                      onFocus: _cache[11] || (_cache[11] = ($event) => showSeriesDropdown.value = true),
+                      onFocus: _cache[12] || (_cache[12] = ($event) => showSeriesDropdown.value = true),
                       onInput: onSeriesSearch
                     }, null, 544), [
                       [vModelText, seriesSearchText.value]
                     ]),
-                    selectedSeries.value ? (openBlock(), createElementBlock("span", _hoisted_71, toDisplayString(selectedSeries.value.chapterCount) + " 话", 1)) : createCommentVNode("", true),
+                    selectedSeries.value ? (openBlock(), createElementBlock("span", _hoisted_74, toDisplayString(selectedSeries.value.chapterCount) + " 话", 1)) : createCommentVNode("", true),
                     selectedSeries.value ? (openBlock(), createElementBlock("svg", {
                       key: 1,
                       class: "series-clear",
@@ -13799,7 +13894,7 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                       "stroke-width": "2.5",
                       "stroke-linecap": "round",
                       onClick: withModifiers(clearSeriesSelection, ["stop"])
-                    }, [..._cache[65] || (_cache[65] = [
+                    }, [..._cache[68] || (_cache[68] = [
                       createBaseVNode("line", {
                         x1: "18",
                         y1: "6",
@@ -13816,13 +13911,13 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                   ]),
                   createVNode(Transition, { name: "dropdown" }, {
                     default: withCtx(() => [
-                      showSeriesDropdown.value ? (openBlock(), createElementBlock("div", _hoisted_72, [
-                        filteredSeriesList.value.length === 0 && !seriesSearchText.value.trim() ? (openBlock(), createElementBlock("div", _hoisted_73, " 暂无系列，输入名称创建新系列 ")) : filteredSeriesList.value.length === 0 && seriesSearchText.value.trim() ? (openBlock(), createElementBlock("div", {
+                      showSeriesDropdown.value ? (openBlock(), createElementBlock("div", _hoisted_75, [
+                        filteredSeriesList.value.length === 0 && !seriesSearchText.value.trim() ? (openBlock(), createElementBlock("div", _hoisted_76, " 暂无系列，输入名称创建新系列 ")) : filteredSeriesList.value.length === 0 && seriesSearchText.value.trim() ? (openBlock(), createElementBlock("div", {
                           key: 1,
                           class: "dropdown-item create-item",
                           onClick: selectNewSeries
                         }, [
-                          _cache[67] || (_cache[67] = createBaseVNode("svg", {
+                          _cache[70] || (_cache[70] = createBaseVNode("svg", {
                             width: "13",
                             height: "13",
                             viewBox: "0 0 24 24",
@@ -13851,7 +13946,7 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                             class: "dropdown-item create-item",
                             onClick: selectNewSeries
                           }, [
-                            _cache[68] || (_cache[68] = createBaseVNode("svg", {
+                            _cache[71] || (_cache[71] = createBaseVNode("svg", {
                               width: "13",
                               height: "13",
                               viewBox: "0 0 24 24",
@@ -13881,7 +13976,7 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                               class: normalizeClass(["dropdown-item", { selected: selectedSeries.value?.path === s.path }]),
                               onClick: ($event) => selectSeries(s)
                             }, [
-                              _cache[69] || (_cache[69] = createBaseVNode("svg", {
+                              _cache[72] || (_cache[72] = createBaseVNode("svg", {
                                 width: "13",
                                 height: "13",
                                 viewBox: "0 0 24 24",
@@ -13892,9 +13987,9 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                               }, [
                                 createBaseVNode("path", { d: "M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" })
                               ], -1)),
-                              createBaseVNode("span", _hoisted_75, toDisplayString(s.name), 1),
-                              createBaseVNode("span", _hoisted_76, toDisplayString(s.chapterCount) + " 话", 1)
-                            ], 10, _hoisted_74);
+                              createBaseVNode("span", _hoisted_78, toDisplayString(s.name), 1),
+                              createBaseVNode("span", _hoisted_79, toDisplayString(s.chapterCount) + " 话", 1)
+                            ], 10, _hoisted_77);
                           }), 128))
                         ], 64))
                       ])) : createCommentVNode("", true)
@@ -13903,12 +13998,12 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                   })
                 ], 512)) : createCommentVNode("", true),
                 withDirectives(createBaseVNode("input", {
-                  "onUpdate:modelValue": _cache[13] || (_cache[13] = ($event) => mangaTitle.value = $event),
+                  "onUpdate:modelValue": _cache[14] || (_cache[14] = ($event) => mangaTitle.value = $event),
                   class: "title-input",
                   type: "text",
                   placeholder: saveMode.value === "series" ? "输入章节/话名称" : "输入漫画名称",
                   onKeydown: withKeys(withModifiers(saveToLibrary, ["prevent"]), ["enter"])
-                }, null, 40, _hoisted_77), [
+                }, null, 40, _hoisted_80), [
                   [vModelText, mangaTitle.value]
                 ]),
                 createBaseVNode("button", {
@@ -13916,12 +14011,12 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
                   disabled: isSaving.value || !canSave.value,
                   onClick: saveToLibrary
                 }, [
-                  isSaving.value ? (openBlock(), createElementBlock("svg", _hoisted_79, [..._cache[70] || (_cache[70] = [
+                  isSaving.value ? (openBlock(), createElementBlock("svg", _hoisted_82, [..._cache[73] || (_cache[73] = [
                     createBaseVNode("polyline", { points: "23 4 23 10 17 10" }, null, -1),
                     createBaseVNode("path", { d: "M20.49 15a9 9 0 11-2.12-9.36L23 10" }, null, -1)
                   ])])) : createCommentVNode("", true),
                   createTextVNode(" " + toDisplayString(isSaving.value ? `${saveProgress.value.current}/${saveProgress.value.total}` : "保存到书库"), 1)
-                ], 8, _hoisted_78)
+                ], 8, _hoisted_81)
               ])
             ])) : createCommentVNode("", true)
           ]),
@@ -13940,7 +14035,7 @@ const _sfc_main$2 = /* @__PURE__ */ defineComponent({
     };
   }
 });
-const GrabView = /* @__PURE__ */ _export_sfc(_sfc_main$2, [["__scopeId", "data-v-2ee3b3bb"]]);
+const GrabView = /* @__PURE__ */ _export_sfc(_sfc_main$2, [["__scopeId", "data-v-02bc6b21"]]);
 const routes = [
   { path: "/", component: HomeView },
   { path: "/reader/:id", component: ReaderView },

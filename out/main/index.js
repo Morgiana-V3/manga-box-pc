@@ -33,6 +33,7 @@ function createWindow() {
   }
   return win;
 }
+electron.app.commandLine.appendSwitch("ignore-certificate-errors");
 electron.app.whenReady().then(() => {
   DEFAULT_LIBRARY_DIR = path.join(electron.app.getPath("userData"), "manga-library");
   fs.mkdirSync(DEFAULT_LIBRARY_DIR, { recursive: true });
@@ -806,6 +807,371 @@ const SCROLL_AND_CAPTURE_SCRIPT = `
     resolve(results);
   })
 `;
+const PAGINATE_PRECHECK_SCRIPT = `
+  new Promise(async (resolve) => {
+    // ── 工具函数 ──
+    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    /** 获取页面状态快照（用于对比变化） */
+    function getSnapshot() {
+      const mainImgs = Array.from(document.querySelectorAll('img'))
+        .filter(i => i.naturalWidth > 200 || i.width > 200)
+        .map(i => i.src)
+        .slice(0, 10);
+
+      // Canvas 内容指纹（采样几个像素点的颜色哈希）
+      let canvasHash = '';
+      const cvs = document.querySelector('canvas');
+      if (cvs && cvs.width > 100 && cvs.height > 100) {
+        try {
+          const ctx = cvs.getContext('2d');
+          if (ctx) {
+            const pts = [[cvs.width/2, cvs.height/2], [cvs.width/4, cvs.height/4], [cvs.width*3/4, cvs.height*3/4]];
+            canvasHash = pts.map(([x,y]) => {
+              const d = ctx.getImageData(Math.floor(x), Math.floor(y), 1, 1).data;
+              return d[0] + ',' + d[1] + ',' + d[2];
+            }).join('|');
+          }
+        } catch {}
+      }
+
+      return {
+        url: location.href,
+        title: document.title,
+        scrollTop: window.scrollY || document.documentElement.scrollTop,
+        mainImgSrcs: mainImgs,
+        canvasHash
+      };
+    }
+
+    /** 对比两个快照，计算变化信号得分 */
+    function diffScore(before, after) {
+      let score = 0;
+      let signals = [];
+
+      // URL 变化（最强信号）
+      if (after.url !== before.url) {
+        score += 40;
+        signals.push('url');
+      }
+
+      // 主图 src 变化
+      if (before.mainImgSrcs.length > 0 || after.mainImgSrcs.length > 0) {
+        const beforeSet = new Set(before.mainImgSrcs);
+        const afterSet = new Set(after.mainImgSrcs);
+        const changed = after.mainImgSrcs.filter(s => !beforeSet.has(s)).length;
+        if (changed > 0) {
+          score += 30;
+          signals.push('img(' + changed + ')');
+        }
+      }
+
+      // Canvas 内容变化
+      if (before.canvasHash && after.canvasHash && before.canvasHash !== after.canvasHash) {
+        score += 30;
+        signals.push('canvas');
+      }
+
+      // 标题变化
+      if (after.title !== before.title) {
+        score += 10;
+        signals.push('title');
+      }
+
+      // 滚动位置重置到顶部
+      if (before.scrollTop > 100 && after.scrollTop < 50) {
+        score += 15;
+        signals.push('scrollReset');
+      }
+
+      return { score, signals };
+    }
+
+    /** 生成候选翻页元素列表（按优先级排序） */
+    function findCandidates() {
+      const candidates = [];
+
+      // ── 策略1：查找"下一页/next"相关的按钮和链接 ──
+      const nextKeywords = [
+        '下一页', '下一话', '下一章', '下页', '后页', '下一回',
+        'next', 'next page', 'next chapter', '▶', '›', '»', '→'
+      ];
+      const allClickable = document.querySelectorAll('a, button, [role="button"], [onclick], .next, .btn-next, [class*="next"]');
+      for (const el of allClickable) {
+        const text = (el.textContent || '').trim().toLowerCase();
+        const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+        const title = (el.getAttribute('title') || '').toLowerCase();
+        const className = (el.className || '').toLowerCase();
+
+        for (const kw of nextKeywords) {
+          if (text.includes(kw.toLowerCase()) || ariaLabel.includes(kw.toLowerCase()) ||
+              title.includes(kw.toLowerCase()) || className.includes(kw.toLowerCase())) {
+            // 排除明显的 "上一页/prev" 元素
+            const fullText = text + ariaLabel + title + className;
+            if (fullText.includes('上一') || fullText.includes('prev') || fullText.includes('前')) continue;
+
+            const rect = el.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+              candidates.push({
+                el,
+                method: 'nextButton',
+                priority: 100,
+                selector: describeElement(el),
+                desc: 'Next button: ' + text.slice(0, 30)
+              });
+            }
+            break;
+          }
+        }
+      }
+
+      // ── 策略2：查找漫画图片主体区域（点击右半部分翻页） ──
+      const mainImages = Array.from(document.querySelectorAll('img'))
+        .filter(i => {
+          const rect = i.getBoundingClientRect();
+          return rect.width > 300 && rect.height > 300;
+        })
+        .sort((a, b) => {
+          const ra = a.getBoundingClientRect();
+          const rb = b.getBoundingClientRect();
+          return (rb.width * rb.height) - (ra.width * ra.height);
+        });
+
+      if (mainImages.length > 0) {
+        candidates.push({
+          el: mainImages[0],
+          method: 'clickImage',
+          priority: 60,
+          selector: describeElement(mainImages[0]),
+          desc: 'Main comic image'
+        });
+      }
+
+      // ── 策略3：查找大面积的可点击覆盖层 / 阅读器容器 ──
+      const readerSelectors = [
+        '.reader-container', '.comic-container', '.manga-container',
+        '#reader', '#viewer', '#comic-container',
+        '[class*="reader"]', '[class*="viewer"]', '[class*="comic-page"]'
+      ];
+      for (const sel of readerSelectors) {
+        try {
+          const el = document.querySelector(sel);
+          if (el) {
+            const rect = el.getBoundingClientRect();
+            if (rect.width > 300 && rect.height > 300) {
+              candidates.push({
+                el,
+                method: 'clickReader',
+                priority: 50,
+                selector: sel,
+                desc: 'Reader container: ' + sel
+              });
+            }
+          }
+        } catch {}
+      }
+
+      // ── 策略4：键盘右方向键 ──
+      candidates.push({
+        el: null,
+        method: 'keyRight',
+        priority: 30,
+        selector: 'keyboard:ArrowRight',
+        desc: 'Keyboard ArrowRight'
+      });
+
+      // 按优先级排序
+      candidates.sort((a, b) => b.priority - a.priority);
+      return candidates;
+    }
+
+    /** 生成元素的 CSS selector 描述 */
+    function describeElement(el) {
+      if (el.id) return '#' + el.id;
+      let desc = el.tagName.toLowerCase();
+      if (el.className && typeof el.className === 'string') {
+        const cls = el.className.trim().split(/\\s+/).slice(0, 3).join('.');
+        if (cls) desc += '.' + cls;
+      }
+      return desc;
+    }
+
+    /** 执行一次点击/按键操作 */
+    function performAction(candidate) {
+      if (candidate.method === 'keyRight') {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', code: 'ArrowRight', bubbles: true }));
+        document.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', code: 'ArrowRight', bubbles: true }));
+        return;
+      }
+
+      const el = candidate.el;
+      if (!el) return;
+
+      if (candidate.method === 'clickImage') {
+        // 点击图片右侧 60% 的位置（大多数漫画平台右侧是翻下一页）
+        const rect = el.getBoundingClientRect();
+        const x = rect.left + rect.width * 0.75;
+        const y = rect.top + rect.height * 0.5;
+        el.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: x, clientY: y }));
+      } else {
+        el.click();
+      }
+    }
+
+    // ── 开始预检 ──
+    const allCandidates = findCandidates();
+    if (allCandidates.length === 0) {
+      resolve({ success: false, reason: 'No candidates found' });
+      return;
+    }
+
+    // 逐个试探候选元素
+    for (const candidate of allCandidates) {
+      const before = getSnapshot();
+
+      performAction(candidate);
+
+      // 等待页面响应（URL 跳转/DOM 更新/网络请求等）
+      await sleep(2000);
+
+      const after = getSnapshot();
+      const diff = diffScore(before, after);
+
+      if (diff.score >= 30) {
+        // ★ 找到有效翻页！但需要回退到原始状态
+        // 尝试用 history.back() 回到之前的页面
+        if (after.url !== before.url) {
+          history.back();
+          await sleep(1500);
+        }
+
+        resolve({
+          success: true,
+          method: candidate.method,
+          selector: candidate.selector,
+          desc: candidate.desc,
+          score: diff.score,
+          signals: diff.signals
+        });
+        return;
+      }
+    }
+
+    resolve({ success: false, reason: 'No effective pagination interaction found' });
+  })
+`;
+function buildSinglePageTurnScript(method, selector) {
+  return `
+    (function() {
+      const method = ${JSON.stringify(method)};
+      const selector = ${JSON.stringify(selector)};
+
+      if (method === 'keyRight') {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', code: 'ArrowRight', bubbles: true }));
+        document.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', code: 'ArrowRight', bubbles: true }));
+        return { action: 'clicked' };
+      }
+
+      let el = null;
+      if (method === 'nextButton') {
+        const nextKeywords = ['下一页','下一话','下一章','下页','后页','下一回','next','next page','next chapter','▶','›','»','→'];
+        const allClickable = document.querySelectorAll('a, button, [role="button"], [onclick], .next, .btn-next, [class*="next"]');
+        for (const candidate of allClickable) {
+          const text = (candidate.textContent || '').trim().toLowerCase();
+          const ariaLabel = (candidate.getAttribute('aria-label') || '').toLowerCase();
+          const title = (candidate.getAttribute('title') || '').toLowerCase();
+          const className = (candidate.className || '').toLowerCase();
+          const fullText = text + ariaLabel + title + className;
+          if (fullText.includes('上一') || fullText.includes('prev') || fullText.includes('前')) continue;
+
+          for (const kw of nextKeywords) {
+            if (text.includes(kw.toLowerCase()) || ariaLabel.includes(kw.toLowerCase()) ||
+                title.includes(kw.toLowerCase()) || className.includes(kw.toLowerCase())) {
+              const rect = candidate.getBoundingClientRect();
+              if (rect.width > 0 && rect.height > 0) { el = candidate; break; }
+            }
+          }
+          if (el) break;
+        }
+      } else if (method === 'clickImage') {
+        const imgs = Array.from(document.querySelectorAll('img'))
+          .filter(i => { const r = i.getBoundingClientRect(); return r.width > 300 && r.height > 300; })
+          .sort((a, b) => {
+            const ra = a.getBoundingClientRect();
+            const rb = b.getBoundingClientRect();
+            return (rb.width * rb.height) - (ra.width * ra.height);
+          });
+        if (imgs.length > 0) el = imgs[0];
+      } else if (method === 'clickReader') {
+        try { el = document.querySelector(selector); } catch {}
+      }
+
+      if (!el) return { action: 'none' };
+
+      // ★ 关键：如果是 <a> 标签且有 href，返回 URL 让主进程导航
+      // 而不是在这里 click()（click 会触发导航，但 executeJavaScript 会被中断）
+      if (el.tagName === 'A' && el.href && el.href !== '#' && !el.href.startsWith('javascript:')) {
+        return { action: 'navigate', url: el.href };
+      }
+
+      // 检查父元素是否是 <a> 标签
+      const parentA = el.closest('a');
+      if (parentA && parentA.href && parentA.href !== '#' && !parentA.href.startsWith('javascript:')) {
+        return { action: 'navigate', url: parentA.href };
+      }
+
+      // 非链接式翻页：直接在页面内执行
+      if (method === 'clickImage') {
+        const rect = el.getBoundingClientRect();
+        const x = rect.left + rect.width * 0.75;
+        const y = rect.top + rect.height * 0.5;
+        el.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: x, clientY: y }));
+      } else {
+        el.click();
+      }
+      return { action: 'clicked' };
+    })()
+  `;
+}
+const PAGE_SNAPSHOT_SCRIPT = `
+  (function() {
+    const mainImgs = Array.from(document.querySelectorAll('img'))
+      .filter(i => i.naturalWidth > 200 || i.width > 200)
+      .map(i => i.src)
+      .slice(0, 10);
+
+    let canvasHash = '';
+    const cvs = document.querySelector('canvas');
+    if (cvs && cvs.width > 100 && cvs.height > 100) {
+      try {
+        const ctx = cvs.getContext('2d');
+        if (ctx) {
+          const pts = [[cvs.width/2, cvs.height/2], [cvs.width/4, cvs.height/4], [cvs.width*3/4, cvs.height*3/4]];
+          canvasHash = pts.map(([x,y]) => {
+            const d = ctx.getImageData(Math.floor(x), Math.floor(y), 1, 1).data;
+            return d[0] + ',' + d[1] + ',' + d[2];
+          }).join('|');
+        }
+      } catch {}
+    }
+
+    return {
+      url: location.href,
+      mainImgSrcs: mainImgs,
+      canvasHash
+    };
+  })()
+`;
+function snapshotsChanged(before, after) {
+  if (after.url !== before.url) return true;
+  if (before.canvasHash && after.canvasHash && before.canvasHash !== after.canvasHash) return true;
+  const beforeSet = new Set(before.mainImgSrcs);
+  const changed = after.mainImgSrcs.filter((s) => !beforeSet.has(s)).length;
+  if (changed > 0) return true;
+  return false;
+}
+let paginateStopFlag = false;
+let paginateStatus = { page: 0, running: false };
 electron.ipcMain.handle("sniff:start", async (_event, url) => {
   try {
     if (sniffWin && !sniffWin.isDestroyed()) {
@@ -817,6 +1183,9 @@ electron.ipcMain.handle("sniff:start", async (_event, url) => {
     pendingRequests = 0;
     lastNetworkActivityTime = Date.now();
     sniffSession = electron.session.fromPartition("persist:sniffer");
+    sniffSession.setCertificateVerifyProc((_request, callback) => {
+      callback(0);
+    });
     sniffWin = new electron.BrowserWindow({
       width: 1100,
       height: 750,
@@ -856,10 +1225,30 @@ electron.ipcMain.handle("sniff:start", async (_event, url) => {
       }
     });
     attachCDP();
-    await sniffWin.loadURL(url);
+    let loadOk = true;
+    try {
+      await sniffWin.loadURL(url);
+    } catch (loadErr) {
+      const errStr = String(loadErr);
+      console.warn("sniff:start loadURL warning:", errStr);
+      if (sniffWin && !sniffWin.isDestroyed()) {
+        const currentUrl = sniffWin.webContents.getURL();
+        if (currentUrl === "about:blank" || currentUrl === "") {
+          loadOk = false;
+        }
+      } else {
+        loadOk = false;
+      }
+    }
+    if (!loadOk) {
+      console.error("sniff:start failed: page completely failed to load");
+      return false;
+    }
     await waitForNetworkIdle(2e3, 15e3);
     try {
-      await sniffWin.webContents.executeJavaScript(TRIGGER_LAZY_LOAD_SCRIPT);
+      if (sniffWin && !sniffWin.isDestroyed()) {
+        await sniffWin.webContents.executeJavaScript(TRIGGER_LAZY_LOAD_SCRIPT);
+      }
     } catch {
     }
     await waitForNetworkIdle(2e3, 1e4);
@@ -994,6 +1383,142 @@ electron.ipcMain.handle("sniff:autoScroll", async () => {
     console.error("sniff:autoScroll failed:", err);
     return { newNetworkImages: 0, canvasDataUrls: [] };
   }
+});
+electron.ipcMain.handle("sniff:paginatePrecheck", async () => {
+  if (!sniffWin || sniffWin.isDestroyed()) return { success: false, reason: "No sniff window" };
+  try {
+    const result = await sniffWin.webContents.executeJavaScript(PAGINATE_PRECHECK_SCRIPT, true);
+    return result || { success: false, reason: "Script returned null" };
+  } catch (err) {
+    console.error("sniff:paginatePrecheck failed:", err);
+    return { success: false, reason: String(err) };
+  }
+});
+function waitForPageLoad(timeoutMs = 3e4) {
+  return new Promise((resolve) => {
+    if (!sniffWin || sniffWin.isDestroyed()) {
+      resolve(false);
+      return;
+    }
+    let resolved = false;
+    const done = (ok) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      sniffWin?.webContents?.removeListener("did-finish-load", onFinish);
+      sniffWin?.webContents?.removeListener("did-fail-load", onFail);
+      resolve(ok);
+    };
+    const onFinish = () => done(true);
+    const onFail = () => done(true);
+    sniffWin.webContents.on("did-finish-load", onFinish);
+    sniffWin.webContents.on("did-fail-load", onFail);
+    const timer = setTimeout(() => done(true), timeoutMs);
+  });
+}
+electron.ipcMain.handle("sniff:autoPaginate", async (_event, method, selector) => {
+  if (!sniffWin || sniffWin.isDestroyed()) return { totalPages: 0 };
+  paginateStopFlag = false;
+  paginateStatus = { page: 0, running: true };
+  const MAX_PAGES = 200;
+  const MAX_NO_CHANGE = 3;
+  let noChangeCount = 0;
+  let pageCount = 0;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const pageTurnScript = buildSinglePageTurnScript(method, selector);
+  const mainWin = getMainWin();
+  try {
+    for (let i = 0; i < MAX_PAGES; i++) {
+      if (paginateStopFlag) break;
+      if (!sniffWin || sniffWin.isDestroyed()) break;
+      let before;
+      try {
+        before = await sniffWin.webContents.executeJavaScript(PAGE_SNAPSHOT_SCRIPT, true);
+      } catch {
+        await sleep(2e3);
+        if (!sniffWin || sniffWin.isDestroyed()) break;
+        try {
+          before = await sniffWin.webContents.executeJavaScript(PAGE_SNAPSHOT_SCRIPT, true);
+        } catch {
+          break;
+        }
+      }
+      let turnResult = { action: "none" };
+      try {
+        turnResult = await sniffWin.webContents.executeJavaScript(pageTurnScript, true) || { action: "none" };
+      } catch {
+      }
+      console.log(`autoPaginate[${i}]: turnResult =`, JSON.stringify(turnResult));
+      if (turnResult.action === "none") {
+        noChangeCount++;
+        if (noChangeCount >= MAX_NO_CHANGE) break;
+        await sleep(1e3);
+        continue;
+      }
+      if (turnResult.action === "navigate" && turnResult.url) {
+        console.log(`autoPaginate[${i}]: navigating to`, turnResult.url);
+        try {
+          const loadPromise = waitForPageLoad(2e4);
+          sniffWin.webContents.loadURL(turnResult.url);
+          await loadPromise;
+        } catch (navErr) {
+          console.warn("autoPaginate navigation warning:", navErr);
+        }
+      } else {
+        await sleep(3e3);
+      }
+      if (!sniffWin || sniffWin.isDestroyed()) break;
+      await waitForNetworkIdle(2e3, 1e4);
+      if (!sniffWin || sniffWin.isDestroyed()) break;
+      try {
+        await sniffWin.webContents.executeJavaScript(TRIGGER_LAZY_LOAD_SCRIPT);
+        await sleep(500);
+      } catch {
+      }
+      let after;
+      try {
+        after = await sniffWin.webContents.executeJavaScript(PAGE_SNAPSHOT_SCRIPT, true);
+      } catch {
+        await sleep(1e3);
+        if (!sniffWin || sniffWin.isDestroyed()) break;
+        try {
+          after = await sniffWin.webContents.executeJavaScript(PAGE_SNAPSHOT_SCRIPT, true);
+        } catch {
+          break;
+        }
+      }
+      if (snapshotsChanged(before, after)) {
+        noChangeCount = 0;
+        pageCount++;
+        paginateStatus = { page: pageCount, running: true };
+        console.log(`autoPaginate: page ${pageCount} turned successfully (${before.url} → ${after.url})`);
+        if (mainWin && !mainWin.isDestroyed()) {
+          mainWin.webContents.send("sniff:paginate-progress", { page: pageCount, running: true });
+        }
+      } else {
+        noChangeCount++;
+        console.log(`autoPaginate: no change detected (noChangeCount=${noChangeCount})`);
+        if (noChangeCount >= MAX_NO_CHANGE) {
+          break;
+        }
+        await sleep(1e3);
+      }
+    }
+  } catch (err) {
+    console.error("sniff:autoPaginate loop error:", err);
+  }
+  if (sniffWin && !sniffWin.isDestroyed()) {
+    await waitForNetworkIdle(2500, 15e3);
+  }
+  paginateStatus = { page: pageCount, running: false };
+  console.log(`autoPaginate: turned ${pageCount} pages, total images: ${sniffedImages.size}`);
+  return { totalPages: pageCount };
+});
+electron.ipcMain.handle("sniff:paginateStop", async () => {
+  paginateStopFlag = true;
+});
+electron.ipcMain.handle("sniff:paginateStatus", async () => {
+  return paginateStatus;
 });
 electron.ipcMain.handle("sniff:captureCanvas", async () => {
   if (!sniffWin || sniffWin.isDestroyed()) return [];
@@ -1222,76 +1747,119 @@ async function getSessionCookies(url) {
     return "";
   }
 }
-function downloadImage(imageUrl, destPath, retries = 3) {
-  return new Promise((resolve) => {
-    const doDownload = async (attempt) => {
-      try {
-        const urlObj = new URL(imageUrl);
-        const getter = urlObj.protocol === "https:" ? https.get : http.get;
-        const originalHeaders = sniffedRequestHeaders.get(imageUrl);
-        const headers = {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          "Referer": originalHeaders?.["Referer"] || originalHeaders?.["referer"] || urlObj.origin,
-          "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
-        };
-        if (originalHeaders?.["Cookie"] || originalHeaders?.["cookie"]) {
-          headers["Cookie"] = originalHeaders["Cookie"] || originalHeaders["cookie"];
-        } else {
-          const sessionCookie = await getSessionCookies(imageUrl);
-          if (sessionCookie) headers["Cookie"] = sessionCookie;
-        }
-        if (originalHeaders?.["Origin"] || originalHeaders?.["origin"]) {
-          headers["Origin"] = originalHeaders["Origin"] || originalHeaders["origin"];
-        }
-        const req = getter(imageUrl, { headers }, (res) => {
-          if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-            downloadImage(res.headers.location, destPath, attempt).then(resolve);
-            return;
-          }
-          if (!res.statusCode || res.statusCode >= 400) {
-            if (attempt < retries) {
-              setTimeout(() => doDownload(attempt + 1), 500 * attempt);
-            } else {
-              resolve(false);
-            }
-            return;
-          }
-          const file = fs.createWriteStream(destPath);
-          res.pipe(file);
-          file.on("finish", () => {
-            file.close();
-            resolve(true);
-          });
-          file.on("error", () => {
-            if (attempt < retries) {
-              setTimeout(() => doDownload(attempt + 1), 500 * attempt);
-            } else {
-              resolve(false);
-            }
-          });
-        });
-        req.on("error", () => {
-          if (attempt < retries) {
-            setTimeout(() => doDownload(attempt + 1), 500 * attempt);
-          } else {
-            resolve(false);
-          }
-        });
-        req.setTimeout(3e4, () => {
-          req.destroy();
-          if (attempt < retries) {
-            setTimeout(() => doDownload(attempt + 1), 500 * attempt);
-          } else {
-            resolve(false);
-          }
-        });
-      } catch {
-        resolve(false);
+async function buildAntiHotlinkHeaders(imageUrl) {
+  const originalHeaders = sniffedRequestHeaders.get(imageUrl);
+  const headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "sec-fetch-dest": "image",
+    "sec-fetch-mode": "no-cors",
+    "sec-fetch-site": "cross-site"
+  };
+  if (originalHeaders?.["Referer"] || originalHeaders?.["referer"]) {
+    headers["Referer"] = originalHeaders["Referer"] || originalHeaders["referer"];
+  } else {
+    try {
+      if (sniffWin && !sniffWin.isDestroyed()) {
+        headers["Referer"] = sniffWin.webContents.getURL();
       }
-    };
-    doDownload(1);
+    } catch {
+    }
+  }
+  if (originalHeaders?.["Cookie"] || originalHeaders?.["cookie"]) {
+    headers["Cookie"] = originalHeaders["Cookie"] || originalHeaders["cookie"];
+  } else {
+    const sessionCookie = await getSessionCookies(imageUrl);
+    if (sessionCookie) headers["Cookie"] = sessionCookie;
+  }
+  if (originalHeaders?.["Origin"] || originalHeaders?.["origin"]) {
+    headers["Origin"] = originalHeaders["Origin"] || originalHeaders["origin"];
+  }
+  return headers;
+}
+function fetchBufferViaNode(url, headers, maxRedirects = 5) {
+  return new Promise((resolve) => {
+    const urlObj = new URL(url);
+    const getter = urlObj.protocol === "https:" ? https.get : http.get;
+    const req = getter(url, {
+      headers,
+      rejectUnauthorized: false
+      // 忽略 SSL 证书错误
+    }, (res) => {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        if (maxRedirects <= 0) {
+          resolve(null);
+          return;
+        }
+        const redirectUrl = new URL(res.headers.location, url).href;
+        fetchBufferViaNode(redirectUrl, headers, maxRedirects - 1).then(resolve);
+        return;
+      }
+      if (!res.statusCode || res.statusCode >= 400) {
+        res.resume();
+        resolve(null);
+        return;
+      }
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => resolve(Buffer.concat(chunks)));
+      res.on("error", () => resolve(null));
+    });
+    req.on("error", () => resolve(null));
+    req.setTimeout(3e4, () => {
+      req.destroy();
+      resolve(null);
+    });
   });
 }
+async function downloadImage(imageUrl, destPath, retries = 3) {
+  const headers = await buildAntiHotlinkHeaders(imageUrl);
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const buffer = await fetchBufferViaNode(imageUrl, headers);
+      if (buffer && buffer.length >= 1024) {
+        fs.writeFileSync(destPath, buffer);
+        return true;
+      }
+      console.warn(`downloadImage attempt ${attempt}/${retries}: ${buffer ? `too small (${buffer.length} bytes)` : "null response"} for ${imageUrl}`);
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, 500 * attempt));
+      }
+    } catch (err) {
+      console.warn(`downloadImage attempt ${attempt}/${retries} error:`, err);
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, 500 * attempt));
+      }
+    }
+  }
+  return false;
+}
+electron.ipcMain.handle("sniff:proxyImage", async (_event, imageUrl) => {
+  try {
+    const headers = await buildAntiHotlinkHeaders(imageUrl);
+    const buffer = await fetchBufferViaNode(imageUrl, headers);
+    if (!buffer || buffer.length < 1024) return null;
+    let mime = "image/jpeg";
+    try {
+      const pathname = new URL(imageUrl).pathname.toLowerCase();
+      if (pathname.endsWith(".png")) mime = "image/png";
+      else if (pathname.endsWith(".webp")) mime = "image/webp";
+      else if (pathname.endsWith(".gif")) mime = "image/gif";
+      else if (pathname.endsWith(".avif")) mime = "image/avif";
+      else if (pathname.endsWith(".bmp")) mime = "image/bmp";
+    } catch {
+    }
+    return `data:${mime};base64,${buffer.toString("base64")}`;
+  } catch (err) {
+    console.error("sniff:proxyImage failed:", imageUrl, err);
+    return null;
+  }
+});
 electron.ipcMain.handle(
   "sniff:saveToLibrary",
   async (_event, imageUrls, mangaTitle, libraryDir) => {

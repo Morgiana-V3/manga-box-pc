@@ -10,8 +10,7 @@ import {
   renameSync,
   readFileSync,
   writeFileSync,
-  rmdirSync,
-  createWriteStream
+  rmdirSync
 } from 'fs'
 import { get as httpsGet } from 'https'
 import { get as httpGet } from 'http'
@@ -70,6 +69,9 @@ function createWindow(): BrowserWindow {
 
   return win
 }
+
+// ★ 应用级别忽略 SSL 证书错误（很多漫画站证书有问题）
+app.commandLine.appendSwitch('ignore-certificate-errors')
 
 app.whenReady().then(() => {
   DEFAULT_LIBRARY_DIR = join(app.getPath('userData'), 'manga-library')
@@ -1034,6 +1036,407 @@ const SCROLL_AND_CAPTURE_SCRIPT = `
   })
 `
 
+/**
+ * 分页式翻页预检脚本（注入到嗅探窗口）
+ *
+ * 策略：收集所有可能的翻页候选热区，逐个试探点击，通过多信号综合判断
+ * 找到真正能触发"翻到下一页"的交互元素。
+ *
+ * 返回值：
+ *   { success: true, method: string, selector: string } — 找到有效翻页交互
+ *   { success: false, reason: string }                  — 未找到
+ */
+const PAGINATE_PRECHECK_SCRIPT = `
+  new Promise(async (resolve) => {
+    // ── 工具函数 ──
+    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    /** 获取页面状态快照（用于对比变化） */
+    function getSnapshot() {
+      const mainImgs = Array.from(document.querySelectorAll('img'))
+        .filter(i => i.naturalWidth > 200 || i.width > 200)
+        .map(i => i.src)
+        .slice(0, 10);
+
+      // Canvas 内容指纹（采样几个像素点的颜色哈希）
+      let canvasHash = '';
+      const cvs = document.querySelector('canvas');
+      if (cvs && cvs.width > 100 && cvs.height > 100) {
+        try {
+          const ctx = cvs.getContext('2d');
+          if (ctx) {
+            const pts = [[cvs.width/2, cvs.height/2], [cvs.width/4, cvs.height/4], [cvs.width*3/4, cvs.height*3/4]];
+            canvasHash = pts.map(([x,y]) => {
+              const d = ctx.getImageData(Math.floor(x), Math.floor(y), 1, 1).data;
+              return d[0] + ',' + d[1] + ',' + d[2];
+            }).join('|');
+          }
+        } catch {}
+      }
+
+      return {
+        url: location.href,
+        title: document.title,
+        scrollTop: window.scrollY || document.documentElement.scrollTop,
+        mainImgSrcs: mainImgs,
+        canvasHash
+      };
+    }
+
+    /** 对比两个快照，计算变化信号得分 */
+    function diffScore(before, after) {
+      let score = 0;
+      let signals = [];
+
+      // URL 变化（最强信号）
+      if (after.url !== before.url) {
+        score += 40;
+        signals.push('url');
+      }
+
+      // 主图 src 变化
+      if (before.mainImgSrcs.length > 0 || after.mainImgSrcs.length > 0) {
+        const beforeSet = new Set(before.mainImgSrcs);
+        const afterSet = new Set(after.mainImgSrcs);
+        const changed = after.mainImgSrcs.filter(s => !beforeSet.has(s)).length;
+        if (changed > 0) {
+          score += 30;
+          signals.push('img(' + changed + ')');
+        }
+      }
+
+      // Canvas 内容变化
+      if (before.canvasHash && after.canvasHash && before.canvasHash !== after.canvasHash) {
+        score += 30;
+        signals.push('canvas');
+      }
+
+      // 标题变化
+      if (after.title !== before.title) {
+        score += 10;
+        signals.push('title');
+      }
+
+      // 滚动位置重置到顶部
+      if (before.scrollTop > 100 && after.scrollTop < 50) {
+        score += 15;
+        signals.push('scrollReset');
+      }
+
+      return { score, signals };
+    }
+
+    /** 生成候选翻页元素列表（按优先级排序） */
+    function findCandidates() {
+      const candidates = [];
+
+      // ── 策略1：查找"下一页/next"相关的按钮和链接 ──
+      const nextKeywords = [
+        '下一页', '下一话', '下一章', '下页', '后页', '下一回',
+        'next', 'next page', 'next chapter', '▶', '›', '»', '→'
+      ];
+      const allClickable = document.querySelectorAll('a, button, [role="button"], [onclick], .next, .btn-next, [class*="next"]');
+      for (const el of allClickable) {
+        const text = (el.textContent || '').trim().toLowerCase();
+        const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+        const title = (el.getAttribute('title') || '').toLowerCase();
+        const className = (el.className || '').toLowerCase();
+
+        for (const kw of nextKeywords) {
+          if (text.includes(kw.toLowerCase()) || ariaLabel.includes(kw.toLowerCase()) ||
+              title.includes(kw.toLowerCase()) || className.includes(kw.toLowerCase())) {
+            // 排除明显的 "上一页/prev" 元素
+            const fullText = text + ariaLabel + title + className;
+            if (fullText.includes('上一') || fullText.includes('prev') || fullText.includes('前')) continue;
+
+            const rect = el.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+              candidates.push({
+                el,
+                method: 'nextButton',
+                priority: 100,
+                selector: describeElement(el),
+                desc: 'Next button: ' + text.slice(0, 30)
+              });
+            }
+            break;
+          }
+        }
+      }
+
+      // ── 策略2：查找漫画图片主体区域（点击右半部分翻页） ──
+      const mainImages = Array.from(document.querySelectorAll('img'))
+        .filter(i => {
+          const rect = i.getBoundingClientRect();
+          return rect.width > 300 && rect.height > 300;
+        })
+        .sort((a, b) => {
+          const ra = a.getBoundingClientRect();
+          const rb = b.getBoundingClientRect();
+          return (rb.width * rb.height) - (ra.width * ra.height);
+        });
+
+      if (mainImages.length > 0) {
+        candidates.push({
+          el: mainImages[0],
+          method: 'clickImage',
+          priority: 60,
+          selector: describeElement(mainImages[0]),
+          desc: 'Main comic image'
+        });
+      }
+
+      // ── 策略3：查找大面积的可点击覆盖层 / 阅读器容器 ──
+      const readerSelectors = [
+        '.reader-container', '.comic-container', '.manga-container',
+        '#reader', '#viewer', '#comic-container',
+        '[class*="reader"]', '[class*="viewer"]', '[class*="comic-page"]'
+      ];
+      for (const sel of readerSelectors) {
+        try {
+          const el = document.querySelector(sel);
+          if (el) {
+            const rect = el.getBoundingClientRect();
+            if (rect.width > 300 && rect.height > 300) {
+              candidates.push({
+                el,
+                method: 'clickReader',
+                priority: 50,
+                selector: sel,
+                desc: 'Reader container: ' + sel
+              });
+            }
+          }
+        } catch {}
+      }
+
+      // ── 策略4：键盘右方向键 ──
+      candidates.push({
+        el: null,
+        method: 'keyRight',
+        priority: 30,
+        selector: 'keyboard:ArrowRight',
+        desc: 'Keyboard ArrowRight'
+      });
+
+      // 按优先级排序
+      candidates.sort((a, b) => b.priority - a.priority);
+      return candidates;
+    }
+
+    /** 生成元素的 CSS selector 描述 */
+    function describeElement(el) {
+      if (el.id) return '#' + el.id;
+      let desc = el.tagName.toLowerCase();
+      if (el.className && typeof el.className === 'string') {
+        const cls = el.className.trim().split(/\\s+/).slice(0, 3).join('.');
+        if (cls) desc += '.' + cls;
+      }
+      return desc;
+    }
+
+    /** 执行一次点击/按键操作 */
+    function performAction(candidate) {
+      if (candidate.method === 'keyRight') {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', code: 'ArrowRight', bubbles: true }));
+        document.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', code: 'ArrowRight', bubbles: true }));
+        return;
+      }
+
+      const el = candidate.el;
+      if (!el) return;
+
+      if (candidate.method === 'clickImage') {
+        // 点击图片右侧 60% 的位置（大多数漫画平台右侧是翻下一页）
+        const rect = el.getBoundingClientRect();
+        const x = rect.left + rect.width * 0.75;
+        const y = rect.top + rect.height * 0.5;
+        el.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: x, clientY: y }));
+      } else {
+        el.click();
+      }
+    }
+
+    // ── 开始预检 ──
+    const allCandidates = findCandidates();
+    if (allCandidates.length === 0) {
+      resolve({ success: false, reason: 'No candidates found' });
+      return;
+    }
+
+    // 逐个试探候选元素
+    for (const candidate of allCandidates) {
+      const before = getSnapshot();
+
+      performAction(candidate);
+
+      // 等待页面响应（URL 跳转/DOM 更新/网络请求等）
+      await sleep(2000);
+
+      const after = getSnapshot();
+      const diff = diffScore(before, after);
+
+      if (diff.score >= 30) {
+        // ★ 找到有效翻页！但需要回退到原始状态
+        // 尝试用 history.back() 回到之前的页面
+        if (after.url !== before.url) {
+          history.back();
+          await sleep(1500);
+        }
+
+        resolve({
+          success: true,
+          method: candidate.method,
+          selector: candidate.selector,
+          desc: candidate.desc,
+          score: diff.score,
+          signals: diff.signals
+        });
+        return;
+      }
+    }
+
+    resolve({ success: false, reason: 'No effective pagination interaction found' });
+  })
+`
+
+/**
+ * 单步翻页脚本（注入到嗅探窗口，每次只执行一步翻页动作）
+ *
+ * ★ 关键设计：
+ * 1. 不使用长 Promise！因为翻页可能导致 URL 跳转，JS 上下文被销毁
+ * 2. 如果翻页元素是 <a> 链接，返回 href URL 让主进程用 loadURL 导航
+ *    而不是在 renderer 中 el.click() 触发导航（会被 executeJavaScript 中断）
+ * 3. 非链接式翻页（键盘、点击图片、JS 事件）仍在 renderer 中执行
+ *
+ * 返回值：
+ *   { action: 'navigate', url: '...' }  — 需要主进程导航到新 URL
+ *   { action: 'clicked' }               — 已在页面内执行点击/按键
+ *   { action: 'none' }                  — 未找到翻页元素
+ */
+function buildSinglePageTurnScript(method: string, selector: string): string {
+  return `
+    (function() {
+      const method = ${JSON.stringify(method)};
+      const selector = ${JSON.stringify(selector)};
+
+      if (method === 'keyRight') {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', code: 'ArrowRight', bubbles: true }));
+        document.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', code: 'ArrowRight', bubbles: true }));
+        return { action: 'clicked' };
+      }
+
+      let el = null;
+      if (method === 'nextButton') {
+        const nextKeywords = ['下一页','下一话','下一章','下页','后页','下一回','next','next page','next chapter','▶','›','»','→'];
+        const allClickable = document.querySelectorAll('a, button, [role="button"], [onclick], .next, .btn-next, [class*="next"]');
+        for (const candidate of allClickable) {
+          const text = (candidate.textContent || '').trim().toLowerCase();
+          const ariaLabel = (candidate.getAttribute('aria-label') || '').toLowerCase();
+          const title = (candidate.getAttribute('title') || '').toLowerCase();
+          const className = (candidate.className || '').toLowerCase();
+          const fullText = text + ariaLabel + title + className;
+          if (fullText.includes('上一') || fullText.includes('prev') || fullText.includes('前')) continue;
+
+          for (const kw of nextKeywords) {
+            if (text.includes(kw.toLowerCase()) || ariaLabel.includes(kw.toLowerCase()) ||
+                title.includes(kw.toLowerCase()) || className.includes(kw.toLowerCase())) {
+              const rect = candidate.getBoundingClientRect();
+              if (rect.width > 0 && rect.height > 0) { el = candidate; break; }
+            }
+          }
+          if (el) break;
+        }
+      } else if (method === 'clickImage') {
+        const imgs = Array.from(document.querySelectorAll('img'))
+          .filter(i => { const r = i.getBoundingClientRect(); return r.width > 300 && r.height > 300; })
+          .sort((a, b) => {
+            const ra = a.getBoundingClientRect();
+            const rb = b.getBoundingClientRect();
+            return (rb.width * rb.height) - (ra.width * ra.height);
+          });
+        if (imgs.length > 0) el = imgs[0];
+      } else if (method === 'clickReader') {
+        try { el = document.querySelector(selector); } catch {}
+      }
+
+      if (!el) return { action: 'none' };
+
+      // ★ 关键：如果是 <a> 标签且有 href，返回 URL 让主进程导航
+      // 而不是在这里 click()（click 会触发导航，但 executeJavaScript 会被中断）
+      if (el.tagName === 'A' && el.href && el.href !== '#' && !el.href.startsWith('javascript:')) {
+        return { action: 'navigate', url: el.href };
+      }
+
+      // 检查父元素是否是 <a> 标签
+      const parentA = el.closest('a');
+      if (parentA && parentA.href && parentA.href !== '#' && !parentA.href.startsWith('javascript:')) {
+        return { action: 'navigate', url: parentA.href };
+      }
+
+      // 非链接式翻页：直接在页面内执行
+      if (method === 'clickImage') {
+        const rect = el.getBoundingClientRect();
+        const x = rect.left + rect.width * 0.75;
+        const y = rect.top + rect.height * 0.5;
+        el.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: x, clientY: y }));
+      } else {
+        el.click();
+      }
+      return { action: 'clicked' };
+    })()
+  `
+}
+
+/** 获取页面快照脚本（用于翻页前后对比） */
+const PAGE_SNAPSHOT_SCRIPT = `
+  (function() {
+    const mainImgs = Array.from(document.querySelectorAll('img'))
+      .filter(i => i.naturalWidth > 200 || i.width > 200)
+      .map(i => i.src)
+      .slice(0, 10);
+
+    let canvasHash = '';
+    const cvs = document.querySelector('canvas');
+    if (cvs && cvs.width > 100 && cvs.height > 100) {
+      try {
+        const ctx = cvs.getContext('2d');
+        if (ctx) {
+          const pts = [[cvs.width/2, cvs.height/2], [cvs.width/4, cvs.height/4], [cvs.width*3/4, cvs.height*3/4]];
+          canvasHash = pts.map(([x,y]) => {
+            const d = ctx.getImageData(Math.floor(x), Math.floor(y), 1, 1).data;
+            return d[0] + ',' + d[1] + ',' + d[2];
+          }).join('|');
+        }
+      } catch {}
+    }
+
+    return {
+      url: location.href,
+      mainImgSrcs: mainImgs,
+      canvasHash
+    };
+  })()
+`
+
+/** 对比两个页面快照是否有实质性变化 */
+function snapshotsChanged(
+  before: { url: string; mainImgSrcs: string[]; canvasHash: string },
+  after: { url: string; mainImgSrcs: string[]; canvasHash: string }
+): boolean {
+  if (after.url !== before.url) return true
+  if (before.canvasHash && after.canvasHash && before.canvasHash !== after.canvasHash) return true
+  const beforeSet = new Set(before.mainImgSrcs)
+  const changed = after.mainImgSrcs.filter(s => !beforeSet.has(s)).length
+  if (changed > 0) return true
+  return false
+}
+
+/** 自动翻页停止标志 */
+let paginateStopFlag = false
+/** 自动翻页当前状态 */
+let paginateStatus = { page: 0, running: false }
+
 /** 启动嗅探：创建预览窗口，通过 CDP 持续监听所有网络请求 */
 ipcMain.handle('sniff:start', async (_event, url: string): Promise<boolean> => {
   try {
@@ -1049,6 +1452,11 @@ ipcMain.handle('sniff:start', async (_event, url: string): Promise<boolean> => {
 
     // 创建独立 session
     sniffSession = session.fromPartition('persist:sniffer')
+
+    // ★ 忽略 SSL 证书错误（很多漫画站证书有问题或使用自签名证书）
+    sniffSession.setCertificateVerifyProc((_request, callback) => {
+      callback(0) // 0 = 信任所有证书
+    })
 
     // 创建可见的嗅探窗口（预览模式：用户可以实时看到页面加载过程）
     sniffWin = new BrowserWindow({
@@ -1101,15 +1509,38 @@ ipcMain.handle('sniff:start', async (_event, url: string): Promise<boolean> => {
     // 触发的新图片请求也会被 CDP 捕获并推送到前端
     attachCDP()
 
-    // 加载页面
-    await sniffWin.loadURL(url)
+    // 加载页面（容错：某些站点部分资源加载失败但主页面可用）
+    let loadOk = true
+    try {
+      await sniffWin.loadURL(url)
+    } catch (loadErr: unknown) {
+      const errStr = String(loadErr)
+      console.warn('sniff:start loadURL warning:', errStr)
+      // 如果窗口已经有内容（部分加载成功），不中断流程
+      if (sniffWin && !sniffWin.isDestroyed()) {
+        const currentUrl = sniffWin.webContents.getURL()
+        // about:blank 说明完全没加载到任何内容，才算失败
+        if (currentUrl === 'about:blank' || currentUrl === '') {
+          loadOk = false
+        }
+      } else {
+        loadOk = false
+      }
+    }
+
+    if (!loadOk) {
+      console.error('sniff:start failed: page completely failed to load')
+      return false
+    }
 
     // 使用网络空闲检测代替固定等待——等到连续 2 秒无新请求
     await waitForNetworkIdle(2000, 15000)
 
     // 触发懒加载
     try {
-      await sniffWin.webContents.executeJavaScript(TRIGGER_LAZY_LOAD_SCRIPT)
+      if (sniffWin && !sniffWin.isDestroyed()) {
+        await sniffWin.webContents.executeJavaScript(TRIGGER_LAZY_LOAD_SCRIPT)
+      }
     } catch { /* 非致命 */ }
 
     // 再等待网络空闲（懒加载触发的新请求）
@@ -1292,6 +1723,191 @@ ipcMain.handle('sniff:autoScroll', async (): Promise<{ newNetworkImages: number;
     console.error('sniff:autoScroll failed:', err)
     return { newNetworkImages: 0, canvasDataUrls: [] }
   }
+})
+
+/** 分页式翻页预检：检测页面中有效的翻页交互方式 */
+ipcMain.handle('sniff:paginatePrecheck', async (): Promise<{
+  success: boolean
+  method?: string
+  selector?: string
+  desc?: string
+  score?: number
+  signals?: string[]
+  reason?: string
+}> => {
+  if (!sniffWin || sniffWin.isDestroyed()) return { success: false, reason: 'No sniff window' }
+  try {
+    const result = await sniffWin.webContents.executeJavaScript(PAGINATE_PRECHECK_SCRIPT, true)
+    return result || { success: false, reason: 'Script returned null' }
+  } catch (err) {
+    console.error('sniff:paginatePrecheck failed:', err)
+    return { success: false, reason: String(err) }
+  }
+})
+
+/** 等待嗅探窗口页面加载完成（did-finish-load 或 did-fail-load） */
+function waitForPageLoad(timeoutMs = 30000): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (!sniffWin || sniffWin.isDestroyed()) { resolve(false); return }
+
+    let resolved = false
+    const done = (ok: boolean): void => {
+      if (resolved) return
+      resolved = true
+      clearTimeout(timer)
+      sniffWin?.webContents?.removeListener('did-finish-load', onFinish)
+      sniffWin?.webContents?.removeListener('did-fail-load', onFail)
+      resolve(ok)
+    }
+
+    const onFinish = (): void => done(true)
+    const onFail = (): void => done(true) // 即使加载失败（部分资源），页面可能已经有内容了
+
+    sniffWin.webContents.on('did-finish-load', onFinish)
+    sniffWin.webContents.on('did-fail-load', onFail)
+
+    const timer = setTimeout(() => done(true), timeoutMs) // 超时也算完成
+  })
+}
+
+/** 分页式自动翻页：主进程循环驱动，每步独立执行，不依赖长 Promise */
+ipcMain.handle('sniff:autoPaginate', async (_event, method: string, selector: string): Promise<{ totalPages: number }> => {
+  if (!sniffWin || sniffWin.isDestroyed()) return { totalPages: 0 }
+
+  paginateStopFlag = false
+  paginateStatus = { page: 0, running: true }
+
+  const MAX_PAGES = 200
+  const MAX_NO_CHANGE = 3
+  let noChangeCount = 0
+  let pageCount = 0
+  const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
+  const pageTurnScript = buildSinglePageTurnScript(method, selector)
+
+  const mainWin = getMainWin()
+
+  try {
+    for (let i = 0; i < MAX_PAGES; i++) {
+      if (paginateStopFlag) break
+      if (!sniffWin || sniffWin.isDestroyed()) break
+
+      // 1. 获取翻页前的快照
+      let before: { url: string; mainImgSrcs: string[]; canvasHash: string }
+      try {
+        before = await sniffWin.webContents.executeJavaScript(PAGE_SNAPSHOT_SCRIPT, true)
+      } catch {
+        // 页面可能正在导航中，等一下再试
+        await sleep(2000)
+        if (!sniffWin || sniffWin.isDestroyed()) break
+        try {
+          before = await sniffWin.webContents.executeJavaScript(PAGE_SNAPSHOT_SCRIPT, true)
+        } catch { break }
+      }
+
+      // 2. 执行翻页动作
+      let turnResult: { action: string; url?: string } = { action: 'none' }
+      try {
+        turnResult = await sniffWin.webContents.executeJavaScript(pageTurnScript, true) || { action: 'none' }
+      } catch {
+        // 翻页脚本执行失败（可能页面已在导航中），忽略
+      }
+
+      console.log(`autoPaginate[${i}]: turnResult =`, JSON.stringify(turnResult))
+
+      if (turnResult.action === 'none') {
+        // 没找到翻页元素，无法继续
+        noChangeCount++
+        if (noChangeCount >= MAX_NO_CHANGE) break
+        await sleep(1000)
+        continue
+      }
+
+      if (turnResult.action === 'navigate' && turnResult.url) {
+        // ★ 链接式翻页：用 loadURL 导航到新 URL
+        // 这样预览窗口会实际显示新页面！（之前用 el.click() 可能被 executeJS 中断）
+        console.log(`autoPaginate[${i}]: navigating to`, turnResult.url)
+        try {
+          // 先开始等待页面加载完成
+          const loadPromise = waitForPageLoad(20000)
+          // 然后发起导航
+          sniffWin.webContents.loadURL(turnResult.url)
+          // 等待页面加载完成
+          await loadPromise
+        } catch (navErr) {
+          console.warn('autoPaginate navigation warning:', navErr)
+        }
+      } else {
+        // 非链接式翻页（键盘、JS 点击等），等待页面内容变化
+        await sleep(3000)
+      }
+
+      if (!sniffWin || sniffWin.isDestroyed()) break
+
+      // 3. 等待网络空闲
+      await waitForNetworkIdle(2000, 10000)
+      if (!sniffWin || sniffWin.isDestroyed()) break
+
+      // 4. 触发懒加载
+      try {
+        await sniffWin.webContents.executeJavaScript(TRIGGER_LAZY_LOAD_SCRIPT)
+        await sleep(500)
+      } catch { /* 非致命 */ }
+
+      // 5. 获取翻页后的快照
+      let after: { url: string; mainImgSrcs: string[]; canvasHash: string }
+      try {
+        after = await sniffWin.webContents.executeJavaScript(PAGE_SNAPSHOT_SCRIPT, true)
+      } catch {
+        await sleep(1000)
+        if (!sniffWin || sniffWin.isDestroyed()) break
+        try {
+          after = await sniffWin.webContents.executeJavaScript(PAGE_SNAPSHOT_SCRIPT, true)
+        } catch { break }
+      }
+
+      // 6. 对比快照判断是否成功翻页
+      if (snapshotsChanged(before, after)) {
+        noChangeCount = 0
+        pageCount++
+        paginateStatus = { page: pageCount, running: true }
+        console.log(`autoPaginate: page ${pageCount} turned successfully (${before.url} → ${after.url})`)
+        // 通知前端当前页码
+        if (mainWin && !mainWin.isDestroyed()) {
+          mainWin.webContents.send('sniff:paginate-progress', { page: pageCount, running: true })
+        }
+      } else {
+        noChangeCount++
+        console.log(`autoPaginate: no change detected (noChangeCount=${noChangeCount})`)
+        if (noChangeCount >= MAX_NO_CHANGE) {
+          // 连续无变化，认为已到最后一页
+          break
+        }
+        await sleep(1000)
+      }
+    }
+  } catch (err) {
+    console.error('sniff:autoPaginate loop error:', err)
+  }
+
+  // 最后等待网络请求完成
+  if (sniffWin && !sniffWin.isDestroyed()) {
+    await waitForNetworkIdle(2500, 15000)
+  }
+
+  paginateStatus = { page: pageCount, running: false }
+  console.log(`autoPaginate: turned ${pageCount} pages, total images: ${sniffedImages.size}`)
+
+  return { totalPages: pageCount }
+})
+
+/** 停止自动翻页 */
+ipcMain.handle('sniff:paginateStop', async (): Promise<void> => {
+  paginateStopFlag = true
+})
+
+/** 获取自动翻页状态 */
+ipcMain.handle('sniff:paginateStatus', async (): Promise<{ page: number; running: boolean }> => {
+  return paginateStatus
 })
 
 /** 从页面中的 Canvas 元素提取图片 */
@@ -1574,7 +2190,6 @@ ipcMain.handle(
 
 /**
  * 从嗅探 session 中获取指定 URL 的 Cookie 字符串
- * （用于下载时透传，解决某些 CDN 需要登录态的问题）
  */
 async function getSessionCookies(url: string): Promise<string> {
   try {
@@ -1587,85 +2202,158 @@ async function getSessionCookies(url: string): Promise<string> {
 }
 
 /**
- * 下载图片并保存到指定目录（带重试 + Cookie 透传）
- * 优先使用 CDP 捕获的原始请求头（含 Cookie/Referer），
- * 如果没有则从 sniffSession.cookies 获取 Cookie 作为兜底
+ * ★ 构建反防盗链请求头（Node.js 原生 HTTP 使用）
+ * 合并 CDP 捕获的原始请求头 + sniffSession Cookie + 浏览器指纹头
  */
-function downloadImage(imageUrl: string, destPath: string, retries = 3): Promise<boolean> {
-  return new Promise((resolve) => {
-    const doDownload = async (attempt: number): Promise<void> => {
-      try {
-        const urlObj = new URL(imageUrl)
-        const getter = urlObj.protocol === 'https:' ? httpsGet : httpGet
+async function buildAntiHotlinkHeaders(imageUrl: string): Promise<Record<string, string>> {
+  const originalHeaders = sniffedRequestHeaders.get(imageUrl)
+  const headers: Record<string, string> = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'sec-fetch-dest': 'image',
+    'sec-fetch-mode': 'no-cors',
+    'sec-fetch-site': 'cross-site'
+  }
 
-        // ★ 构建请求头：优先透传 CDP 捕获的原始请求头
-        const originalHeaders = sniffedRequestHeaders.get(imageUrl)
-        const headers: Record<string, string> = {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Referer': originalHeaders?.['Referer'] || originalHeaders?.['referer'] || urlObj.origin,
-          'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
-        }
-
-        // 透传 Cookie：优先用 CDP 捕获的，其次从 session 获取
-        if (originalHeaders?.['Cookie'] || originalHeaders?.['cookie']) {
-          headers['Cookie'] = originalHeaders['Cookie'] || originalHeaders['cookie']
-        } else {
-          const sessionCookie = await getSessionCookies(imageUrl)
-          if (sessionCookie) headers['Cookie'] = sessionCookie
-        }
-
-        // 透传其他关键请求头
-        if (originalHeaders?.['Origin'] || originalHeaders?.['origin']) {
-          headers['Origin'] = originalHeaders['Origin'] || originalHeaders['origin']
-        }
-
-        const req = getter(imageUrl, { headers }, (res) => {
-          // 跟随重定向
-          if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-            downloadImage(res.headers.location, destPath, attempt).then(resolve)
-            return
-          }
-          if (!res.statusCode || res.statusCode >= 400) {
-            if (attempt < retries) {
-              setTimeout(() => doDownload(attempt + 1), 500 * attempt)
-            } else {
-              resolve(false)
-            }
-            return
-          }
-          const file = createWriteStream(destPath)
-          res.pipe(file)
-          file.on('finish', () => { file.close(); resolve(true) })
-          file.on('error', () => {
-            if (attempt < retries) {
-              setTimeout(() => doDownload(attempt + 1), 500 * attempt)
-            } else {
-              resolve(false)
-            }
-          })
-        })
-        req.on('error', () => {
-          if (attempt < retries) {
-            setTimeout(() => doDownload(attempt + 1), 500 * attempt)
-          } else {
-            resolve(false)
-          }
-        })
-        req.setTimeout(30000, () => {
-          req.destroy()
-          if (attempt < retries) {
-            setTimeout(() => doDownload(attempt + 1), 500 * attempt)
-          } else {
-            resolve(false)
-          }
-        })
-      } catch {
-        resolve(false)
+  // ★ Referer 最关键：必须是原始页面 URL
+  if (originalHeaders?.['Referer'] || originalHeaders?.['referer']) {
+    headers['Referer'] = originalHeaders['Referer'] || originalHeaders['referer']
+  } else {
+    try {
+      if (sniffWin && !sniffWin.isDestroyed()) {
+        headers['Referer'] = sniffWin.webContents.getURL()
       }
-    }
-    doDownload(1)
+    } catch { /* ignore */ }
+  }
+
+  // Cookie：优先用 CDP 捕获的原始 Cookie，其次从 sniffSession 获取
+  if (originalHeaders?.['Cookie'] || originalHeaders?.['cookie']) {
+    headers['Cookie'] = originalHeaders['Cookie'] || originalHeaders['cookie']
+  } else {
+    const sessionCookie = await getSessionCookies(imageUrl)
+    if (sessionCookie) headers['Cookie'] = sessionCookie
+  }
+
+  // 透传 Origin
+  if (originalHeaders?.['Origin'] || originalHeaders?.['origin']) {
+    headers['Origin'] = originalHeaders['Origin'] || originalHeaders['origin']
+  }
+
+  return headers
+}
+
+/**
+ * 使用 Node.js 原生 http/https 获取 URL 内容为 Buffer
+ * 自动跟随最多 5 次重定向
+ */
+function fetchBufferViaNode(url: string, headers: Record<string, string>, maxRedirects = 5): Promise<Buffer | null> {
+  return new Promise((resolve) => {
+    const urlObj = new URL(url)
+    const getter = urlObj.protocol === 'https:' ? httpsGet : httpGet
+
+    const req = getter(url, {
+      headers,
+      rejectUnauthorized: false  // 忽略 SSL 证书错误
+    }, (res) => {
+      // 跟随重定向
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume()
+        if (maxRedirects <= 0) { resolve(null); return }
+        const redirectUrl = new URL(res.headers.location, url).href
+        fetchBufferViaNode(redirectUrl, headers, maxRedirects - 1).then(resolve)
+        return
+      }
+
+      if (!res.statusCode || res.statusCode >= 400) {
+        res.resume()
+        resolve(null)
+        return
+      }
+
+      const chunks: Buffer[] = []
+      res.on('data', (chunk: Buffer) => chunks.push(chunk))
+      res.on('end', () => resolve(Buffer.concat(chunks)))
+      res.on('error', () => resolve(null))
+    })
+
+    req.on('error', () => resolve(null))
+    req.setTimeout(30000, () => {
+      req.destroy()
+      resolve(null)
+    })
   })
 }
+
+/**
+ * ★ 使用 Node.js 原生 http/https 下载图片（绕过 Chromium referrer policy 限制）
+ *
+ * 为什么不用 session.fetch()？
+ * Chromium 的 network_service_network_delegate 会检查 Referrer 合法性，
+ * 跨域 Referrer（如 dm5.com → cdndm5.com）会被判定为 "invalid referrer"
+ * 并直接取消请求（ERR_BLOCKED_BY_CLIENT），这是 Chromium 内部安全机制。
+ *
+ * Node.js 的 http/https 模块不走 Chromium 网络栈，可以自由设置任意请求头。
+ */
+async function downloadImage(imageUrl: string, destPath: string, retries = 3): Promise<boolean> {
+  const headers = await buildAntiHotlinkHeaders(imageUrl)
+
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const buffer = await fetchBufferViaNode(imageUrl, headers)
+
+      if (buffer && buffer.length >= 1024) {
+        writeFileSync(destPath, buffer)
+        return true
+      }
+
+      console.warn(`downloadImage attempt ${attempt}/${retries}: ${buffer ? `too small (${buffer.length} bytes)` : 'null response'} for ${imageUrl}`)
+      if (attempt < retries) {
+        await new Promise(r => setTimeout(r, 500 * attempt))
+      }
+    } catch (err) {
+      console.warn(`downloadImage attempt ${attempt}/${retries} error:`, err)
+      if (attempt < retries) {
+        await new Promise(r => setTimeout(r, 500 * attempt))
+      }
+    }
+  }
+  return false
+}
+
+/**
+ * ★ 图片代理：前端通过主进程获取图片数据（绕过防盗链）
+ *
+ * 使用 Node.js 原生 http/https 模块发请求（不走 Chromium 网络栈），
+ * 可以自由设置 Referer 头，不受 Chromium referrer policy 检查的限制。
+ */
+ipcMain.handle('sniff:proxyImage', async (_event, imageUrl: string): Promise<string | null> => {
+  try {
+    const headers = await buildAntiHotlinkHeaders(imageUrl)
+    const buffer = await fetchBufferViaNode(imageUrl, headers)
+
+    if (!buffer || buffer.length < 1024) return null
+
+    // 根据 URL 推断 MIME 类型
+    let mime = 'image/jpeg'
+    try {
+      const pathname = new URL(imageUrl).pathname.toLowerCase()
+      if (pathname.endsWith('.png')) mime = 'image/png'
+      else if (pathname.endsWith('.webp')) mime = 'image/webp'
+      else if (pathname.endsWith('.gif')) mime = 'image/gif'
+      else if (pathname.endsWith('.avif')) mime = 'image/avif'
+      else if (pathname.endsWith('.bmp')) mime = 'image/bmp'
+    } catch { /* fallback to jpeg */ }
+
+    return `data:${mime};base64,${buffer.toString('base64')}`
+  } catch (err) {
+    console.error('sniff:proxyImage failed:', imageUrl, err)
+    return null
+  }
+})
 
 /** 将选中的图片 URL 列表下载到书库中作为一本漫画 */
 ipcMain.handle(

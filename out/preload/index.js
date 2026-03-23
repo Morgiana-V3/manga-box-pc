@@ -33,11 +33,16 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
   sniffCheckLogin: (url) => electron.ipcRenderer.invoke("sniff:checkLogin", url),
   sniffClearCookies: (url) => electron.ipcRenderer.invoke("sniff:clearCookies", url),
   sniffGetImages: () => electron.ipcRenderer.invoke("sniff:getImages"),
+  sniffProxyImage: (imageUrl) => electron.ipcRenderer.invoke("sniff:proxyImage", imageUrl),
   sniffExecuteJS: (code) => electron.ipcRenderer.invoke("sniff:executeJS", code),
   sniffGetCurrentURL: () => electron.ipcRenderer.invoke("sniff:getCurrentURL"),
   sniffNavigate: (url) => electron.ipcRenderer.invoke("sniff:navigate", url),
   sniffClearImages: () => electron.ipcRenderer.invoke("sniff:clearImages"),
   sniffAutoScroll: () => electron.ipcRenderer.invoke("sniff:autoScroll"),
+  sniffPaginatePrecheck: () => electron.ipcRenderer.invoke("sniff:paginatePrecheck"),
+  sniffAutoPaginate: (method, selector) => electron.ipcRenderer.invoke("sniff:autoPaginate", method, selector),
+  sniffPaginateStop: () => electron.ipcRenderer.invoke("sniff:paginateStop"),
+  sniffPaginateStatus: () => electron.ipcRenderer.invoke("sniff:paginateStatus"),
   sniffCaptureCanvas: () => electron.ipcRenderer.invoke("sniff:captureCanvas"),
   sniffScrollAndCapture: () => electron.ipcRenderer.invoke("sniff:scrollAndCapture"),
   sniffSaveDataUrlsToLibrary: (dataUrls, title, libraryDir) => electron.ipcRenderer.invoke("sniff:saveDataUrlsToLibrary", dataUrls, title, libraryDir),
@@ -68,6 +73,11 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
     const handler = (_event, url) => callback(url);
     electron.ipcRenderer.on("sniff:url-changed", handler);
     return () => electron.ipcRenderer.removeListener("sniff:url-changed", handler);
+  },
+  onSniffPaginateProgress: (callback) => {
+    const handler = (_event, data) => callback(data);
+    electron.ipcRenderer.on("sniff:paginate-progress", handler);
+    return () => electron.ipcRenderer.removeListener("sniff:paginate-progress", handler);
   },
   // 持久化存储
   storeGet: (key) => electron.ipcRenderer.invoke("store:get", key),

@@ -48,11 +48,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   sniffClearCookies: (url?: string): Promise<boolean> => ipcRenderer.invoke('sniff:clearCookies', url),
   sniffGetImages: (): Promise<Array<{ url: string; size: number; contentType: string }>> =>
     ipcRenderer.invoke('sniff:getImages'),
+  sniffProxyImage: (imageUrl: string): Promise<string | null> =>
+    ipcRenderer.invoke('sniff:proxyImage', imageUrl),
   sniffExecuteJS: (code: string): Promise<unknown> => ipcRenderer.invoke('sniff:executeJS', code),
   sniffGetCurrentURL: (): Promise<string> => ipcRenderer.invoke('sniff:getCurrentURL'),
   sniffNavigate: (url: string): Promise<boolean> => ipcRenderer.invoke('sniff:navigate', url),
   sniffClearImages: (): Promise<void> => ipcRenderer.invoke('sniff:clearImages'),
   sniffAutoScroll: (): Promise<{ newNetworkImages: number; canvasDataUrls: string[] }> => ipcRenderer.invoke('sniff:autoScroll'),
+  sniffPaginatePrecheck: (): Promise<{ success: boolean; method?: string; selector?: string; desc?: string; score?: number; signals?: string[]; reason?: string }> =>
+    ipcRenderer.invoke('sniff:paginatePrecheck'),
+  sniffAutoPaginate: (method: string, selector: string): Promise<{ totalPages: number }> =>
+    ipcRenderer.invoke('sniff:autoPaginate', method, selector),
+  sniffPaginateStop: (): Promise<void> => ipcRenderer.invoke('sniff:paginateStop'),
+  sniffPaginateStatus: (): Promise<{ page: number; running: boolean }> => ipcRenderer.invoke('sniff:paginateStatus'),
   sniffCaptureCanvas: (): Promise<string[]> => ipcRenderer.invoke('sniff:captureCanvas'),
   sniffScrollAndCapture: (): Promise<string[]> => ipcRenderer.invoke('sniff:scrollAndCapture'),
   sniffSaveDataUrlsToLibrary: (dataUrls: string[], title: string, libraryDir: string): Promise<boolean> =>
@@ -95,6 +103,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_event: Electron.IpcRendererEvent, url: string): void => callback(url)
     ipcRenderer.on('sniff:url-changed', handler)
     return () => ipcRenderer.removeListener('sniff:url-changed', handler)
+  },
+  onSniffPaginateProgress: (callback: (data: { page: number; running: boolean }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { page: number; running: boolean }): void => callback(data)
+    ipcRenderer.on('sniff:paginate-progress', handler)
+    return () => ipcRenderer.removeListener('sniff:paginate-progress', handler)
   },
 
   // 持久化存储

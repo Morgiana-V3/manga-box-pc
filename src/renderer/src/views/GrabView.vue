@@ -235,6 +235,21 @@
             </svg>
             {{ isScrolling ? '滚动中...' : '自动滚动' }}
           </button>
+          <!-- 分页式自动翻页（仅在分页模式下显示） -->
+          <button
+            v-if="isSniffing && sniffConfig.comicLayout === 'paginated'"
+            class="btn btn-accent btn-sm"
+            :disabled="isPaginating"
+            @click="isPaginating ? stopPaginate() : startAutoPaginate()"
+          >
+            <svg v-if="isPaginating" class="spinning" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
+            </svg>
+            <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <polyline points="9 18 15 12 9 6"/>
+            </svg>
+            {{ isPaginating ? `翻页中(${paginatePageCount}页)...` : '自动翻页' }}
+          </button>
           <button
             v-if="isSniffing && sniffConfig.captureCanvas"
             class="btn btn-accent btn-sm"
@@ -350,7 +365,7 @@
           @click="toggleSelect(img.url)"
         >
           <div class="image-thumb">
-            <img :src="img.url" loading="lazy" draggable="false" @error="onImgError" />
+            <img :src="getThumbSrc(img.url)" loading="lazy" draggable="false" @error="onImgError" />
             <div class="select-badge">
               <svg v-if="selectedUrls.has(img.url)" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/>
@@ -509,6 +524,8 @@ const isScanning = ref(false)
 const isSaving = ref(false)
 const images = ref<SniffedImage[]>([])
 const canvasImages = ref<string[]>([])
+/** ★ 图片缩略图代理缓存：url → data URL（通过主进程的 sniffSession 获取，绕过防盗链） */
+const proxyThumbCache = ref<Map<string, string>>(new Map())
 const selectedUrls = ref<Set<string>>(new Set())
 const selectedCanvasIdxs = ref<Set<number>>(new Set())
 const mangaTitle = ref('')
@@ -747,6 +764,7 @@ async function startSniff(): Promise<void> {
 
   images.value = []
   canvasImages.value = []
+  proxyThumbCache.value.clear()
   selectedUrls.value.clear()
   selectedCanvasIdxs.value = new Set()
   isSniffing.value = true
@@ -763,6 +781,8 @@ async function startSniff(): Promise<void> {
       if (shouldAutoSelect(data.size)) {
         selectedUrls.value.add(data.url)
       }
+      // ★ 异步通过主进程代理加载缩略图（绕过防盗链）
+      loadProxyThumb(data.url)
     }
   })
 
@@ -819,9 +839,13 @@ async function startSniff(): Promise<void> {
     showToast('页面加载完成，请在预览窗口操作或点击「自动滚动」加载更多', 'success')
   }
 
-  // ★ 根据配置自动执行滚动
-  if (ok && sniffConfig.value.autoScrollOnStart && sniffConfig.value.comicLayout === 'scroll') {
-    autoScroll()
+  // ★ 根据配置自动执行滚动或翻页
+  if (ok && sniffConfig.value.autoScrollOnStart) {
+    if (sniffConfig.value.comicLayout === 'scroll') {
+      autoScroll()
+    } else if (sniffConfig.value.comicLayout === 'paginated') {
+      startAutoPaginate()
+    }
   }
 
   // 嗅探过程可能产生新 Cookie，刷新登录状态
@@ -829,6 +853,12 @@ async function startSniff(): Promise<void> {
 }
 
 async function stopSniff(): Promise<void> {
+  // 如果正在自动翻页，先停止
+  if (isPaginating.value) {
+    cleanupPaginateListener()
+    await window.electronAPI.sniffPaginateStop()
+    isPaginating.value = false
+  }
   await window.electronAPI.sniffStop()
   isSniffing.value = false
   if (removeImageListener) { removeImageListener(); removeImageListener = null }
@@ -870,9 +900,80 @@ async function autoScroll(): Promise<void> {
   }
 }
 
+// ─── 分页式自动翻页 ───
+const isPaginating = ref(false)
+const paginatePageCount = ref(0)
+let removePaginateProgressListener: (() => void) | null = null
+
+/** 启动自动翻页（包含预检） */
+async function startAutoPaginate(): Promise<void> {
+  isPaginating.value = true
+  paginatePageCount.value = 0
+
+  showToast('正在预检翻页交互方式...', 'success')
+
+  // 第一步：预检
+  const precheck = await window.electronAPI.sniffPaginatePrecheck()
+
+  if (!precheck.success) {
+    isPaginating.value = false
+    showToast('未检测到有效的翻页交互，可尝试在预览窗口手动翻页', 'error')
+    return
+  }
+
+  const methodDesc = precheck.method === 'nextButton' ? '下一页按钮'
+    : precheck.method === 'clickImage' ? '点击漫画图片'
+    : precheck.method === 'clickReader' ? '点击阅读器容器'
+    : '键盘方向键'
+  showToast(`预检成功！翻页方式：${methodDesc}（${precheck.signals?.join(', ')}），开始自动翻页...`, 'success')
+
+  // 第二步：监听翻页进度事件（主进程每翻一页会推送）
+  removePaginateProgressListener = window.electronAPI.onSniffPaginateProgress((data: { page: number; running: boolean }) => {
+    paginatePageCount.value = data.page
+  })
+
+  // 第三步：执行自动翻页（主进程循环驱动，完成后才 resolve）
+  try {
+    const result = await window.electronAPI.sniffAutoPaginate(
+      precheck.method!,
+      precheck.selector!
+    )
+
+    cleanupPaginateListener()
+    isPaginating.value = false
+    paginatePageCount.value = result.totalPages
+
+    if (result.totalPages > 0) {
+      showToast(`自动翻页完成，共翻了 ${result.totalPages} 页，已捕获 ${images.value.length} 张图片`, 'success')
+    } else {
+      showToast('翻页完成，未检测到新页面（可能已是最后一页）', 'success')
+    }
+  } catch {
+    cleanupPaginateListener()
+    isPaginating.value = false
+    showToast('自动翻页过程中发生错误', 'error')
+  }
+}
+
+/** 停止自动翻页 */
+async function stopPaginate(): Promise<void> {
+  cleanupPaginateListener()
+  await window.electronAPI.sniffPaginateStop()
+  isPaginating.value = false
+  showToast(`已停止自动翻页（已翻 ${paginatePageCount.value} 页）`, 'success')
+}
+
+function cleanupPaginateListener(): void {
+  if (removePaginateProgressListener) {
+    removePaginateProgressListener()
+    removePaginateProgressListener = null
+  }
+}
+
 function clearImages(): void {
   images.value = []
   canvasImages.value = []
+  proxyThumbCache.value.clear()
   selectedUrls.value.clear()
   selectedCanvasIdxs.value = new Set()
   window.electronAPI.sniffClearImages()
@@ -1076,6 +1177,29 @@ function formatDataUrlSize(dataUrl: string): string {
   return formatSize(bytes)
 }
 
+/**
+ * ★ 通过主进程代理加载图片缩略图（绕过防盗链）
+ * 主进程使用 sniffSession.fetch() 发请求（跟嗅探窗口共享浏览器环境），
+ * 返回 base64 data URL 给前端显示
+ */
+async function loadProxyThumb(imageUrl: string): Promise<void> {
+  // 已经在缓存中了
+  if (proxyThumbCache.value.has(imageUrl)) return
+  try {
+    const dataUrl = await window.electronAPI.sniffProxyImage(imageUrl)
+    if (dataUrl) {
+      proxyThumbCache.value.set(imageUrl, dataUrl)
+    }
+  } catch {
+    // 代理加载失败，不影响主流程
+  }
+}
+
+/** 获取图片缩略图的 src：优先使用代理后的 data URL，兜底用原始 URL */
+function getThumbSrc(imageUrl: string): string {
+  return proxyThumbCache.value.get(imageUrl) || imageUrl
+}
+
 function onImgError(e: Event): void {
   const img = e.target as HTMLImageElement
   img.style.display = 'none'
@@ -1095,6 +1219,10 @@ onMounted(() => {
     if (list.length > 0) {
       images.value = list
       selectedUrls.value = new Set(list.map((i) => i.url))
+      // ★ 批量代理加载缩略图
+      for (const img of list) {
+        loadProxyThumb(img.url)
+      }
     }
   })
   document.addEventListener('click', onClickOutside)
@@ -1107,6 +1235,7 @@ onUnmounted(() => {
   if (removeProgressListener) removeProgressListener()
   if (removeWindowClosedListener) removeWindowClosedListener()
   if (removeUrlChangedListener) removeUrlChangedListener()
+  cleanupPaginateListener()
   document.removeEventListener('click', onClickOutside)
   document.removeEventListener('click', onConfigClickOutside)
 })
