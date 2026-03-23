@@ -28,6 +28,23 @@
             placeholder="输入漫画网页地址，如 https://example.com/manga/chapter-1"
             @keydown.enter.prevent="startSniff"
           />
+          <!-- 预览窗口开关 -->
+          <button
+            class="btn btn-preview btn-sm"
+            :class="{ active: previewVisible }"
+            @click="togglePreview"
+            title="显示/隐藏嗅探预览窗口"
+          >
+            <svg v-if="previewVisible" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+              <circle cx="12" cy="12" r="3"/>
+            </svg>
+            <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/>
+              <line x1="1" y1="1" x2="23" y2="23"/>
+            </svg>
+            {{ previewVisible ? '预览中' : '预览' }}
+          </button>
           <button
             v-if="!isSniffing"
             class="btn btn-primary btn-sm"
@@ -46,9 +63,27 @@
             停止
           </button>
         </div>
-        <p class="url-hint">
-          嗅探器会在后台打开网页，自动拦截所有图片资源。初次加载会自动尝试触发懒加载图片，也支持手动滚动抓取。
-        </p>
+        <div class="url-hints">
+          <p class="url-hint">
+            <template v-if="isSniffing">
+              嗅探器<strong>持续监听中</strong> — 可在预览窗口手动滚动、翻页、登录，新图片会自动录入。
+            </template>
+            <template v-else-if="previewVisible">
+              预览窗口已打开 — 可在预览中直接浏览、登录、调试。嗅探器会实时拦截所有图片资源。
+            </template>
+            <template v-else>
+              嗅探器会在后台打开网页，自动拦截所有图片资源。点击「预览」可打开可视化窗口查看加载过程。
+            </template>
+          </p>
+          <p v-if="loginStatus.hasCookies" class="url-hint login-hint">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+              <path d="M22 11.08V12a10 10 0 11-5.93-9.14"/>
+              <polyline points="22 4 12 14.01 9 11.01"/>
+            </svg>
+            已有登录态（{{ loginStatus.cookieCount }} 条 Cookie），抓取时会自动携带身份认证
+            <button class="link-btn" @click="clearLogin">清除登录</button>
+          </p>
+        </div>
       </div>
 
       <!-- 嗅探状态 & 控制 -->
@@ -56,7 +91,7 @@
         <div class="sniff-status">
           <div v-if="isSniffing" class="status-dot pulse" />
           <div v-else class="status-dot idle" />
-          <span>{{ isSniffing ? '嗅探中...' : '嗅探已停止' }}</span>
+          <span>{{ isSniffing ? '持续监听中...' : '嗅探已停止' }}</span>
           <span class="status-count">
             网络图片 <strong>{{ images.length }}</strong> 张
             <template v-if="canvasImages.length > 0">
@@ -65,6 +100,22 @@
           </span>
         </div>
         <div class="sniff-actions">
+          <!-- 重新扫描：手动触发懒加载，抓取预览窗口中新出现的图片 -->
+          <button
+            v-if="isSniffing"
+            class="btn btn-ghost btn-sm"
+            :disabled="isScanning"
+            @click="triggerRescan"
+            title="手动触发懒加载，抓取预览窗口中新出现的图片"
+          >
+            <svg v-if="isScanning" class="spinning" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
+            </svg>
+            <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
+            </svg>
+            {{ isScanning ? '扫描中...' : '重新扫描' }}
+          </button>
           <button
             v-if="isSniffing"
             class="btn btn-ghost btn-sm"
@@ -124,6 +175,24 @@
             清空列表
           </button>
         </div>
+      </div>
+
+      <!-- 持续监听提示 -->
+      <div v-if="isSniffing" class="sniff-live-hint">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+        </svg>
+        <span>
+          嗅探器正在<strong>持续监听</strong>。你可以在预览窗口中手动滚动、翻页、点击——新加载的图片会自动录入。
+          如有遗漏可点击「重新扫描」。
+        </span>
+        <button class="link-btn focus-btn" @click="focusPreview">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/>
+            <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+          </svg>
+          切到预览窗口
+        </button>
       </div>
 
       <!-- Canvas 捕获图片 -->
@@ -331,6 +400,7 @@ const inputUrl = ref('')
 const isSniffing = ref(false)
 const isScrolling = ref(false)
 const isCapturing = ref(false)
+const isScanning = ref(false)
 const isSaving = ref(false)
 const images = ref<SniffedImage[]>([])
 const canvasImages = ref<string[]>([])
@@ -338,6 +408,12 @@ const selectedUrls = ref<Set<string>>(new Set())
 const selectedCanvasIdxs = ref<Set<number>>(new Set())
 const mangaTitle = ref('')
 const saveProgress = ref({ current: 0, total: 0, downloaded: 0 })
+
+// ─── 登录状态 ───
+const loginStatus = ref<{ hasCookies: boolean; cookieCount: number }>({ hasCookies: false, cookieCount: 0 })
+
+// ─── 预览窗口状态 ───
+const previewVisible = ref(true)
 
 // ─── 保存模式 ───
 const saveMode = ref<'single' | 'series'>('single')
@@ -369,8 +445,77 @@ const allSelected = computed(() => {
   return totalImages > 0 && totalSelected.value === totalImages
 })
 
+// ─── 预览窗口控制 ───
+let removeWindowClosedListener: (() => void) | null = null
+let removeUrlChangedListener: (() => void) | null = null
+
+/** 切换预览窗口显示/隐藏 */
+async function togglePreview(): Promise<void> {
+  const newVisible = !previewVisible.value
+  await window.electronAPI.sniffTogglePreview(newVisible)
+  previewVisible.value = newVisible
+}
+
+/** 聚焦到预览窗口（让用户手动操作） */
+async function focusPreview(): Promise<void> {
+  await window.electronAPI.sniffFocusPreview()
+}
+
+/** 手动触发重新扫描（懒加载检测），抓取预览窗口中新出现的图片 */
+async function triggerRescan(): Promise<void> {
+  isScanning.value = true
+  const newCount = await window.electronAPI.sniffTriggerLazy()
+  isScanning.value = false
+  if (newCount > 0) {
+    showToast(`重新扫描完成，新发现 ${newCount} 张图片`, 'success')
+  } else {
+    showToast('重新扫描完成，未发现新图片', 'success')
+  }
+}
+
+/** 检查指定 URL 的登录状态 */
+async function checkLoginStatus(): Promise<void> {
+  const url = inputUrl.value.trim()
+  if (!url) {
+    loginStatus.value = { hasCookies: false, cookieCount: 0 }
+    return
+  }
+  try {
+    let checkUrl = url
+    if (!checkUrl.startsWith('http://') && !checkUrl.startsWith('https://')) {
+      checkUrl = 'https://' + checkUrl
+    }
+    // 提取域名根路径来检查 Cookie
+    const urlObj = new URL(checkUrl)
+    loginStatus.value = await window.electronAPI.sniffCheckLogin(urlObj.origin)
+  } catch {
+    loginStatus.value = { hasCookies: false, cookieCount: 0 }
+  }
+}
+
+/** 清除登录态 */
+async function clearLogin(): Promise<void> {
+  let url = inputUrl.value.trim()
+  if (url) {
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      url = 'https://' + url
+    }
+    try {
+      const urlObj = new URL(url)
+      await window.electronAPI.sniffClearCookies(urlObj.origin)
+    } catch {
+      await window.electronAPI.sniffClearCookies()
+    }
+  } else {
+    await window.electronAPI.sniffClearCookies()
+  }
+  loginStatus.value = { hasCookies: false, cookieCount: 0 }
+  showToast('登录态已清除', 'success')
+}
+
 // ─── 嗅探控制 ───
 let removeImageListener: (() => void) | null = null
+let removeImageUpdatedListener: (() => void) | null = null
 let removeProgressListener: (() => void) | null = null
 
 async function startSniff(): Promise<void> {
@@ -397,30 +542,81 @@ async function startSniff(): Promise<void> {
     }
   })
 
+  // 监听图片信息更新（requestWillBeSent 预录入后 responseReceived 补充精确信息）
+  removeImageUpdatedListener = window.electronAPI.onSniffImageUpdated((data) => {
+    const existing = images.value.find((i) => i.url === data.url)
+    if (existing) {
+      existing.size = data.size
+      existing.contentType = data.contentType
+    }
+  })
+
+  // 监听预览窗口关闭（用户手动关闭预览窗口）
+  if (removeWindowClosedListener) { removeWindowClosedListener(); removeWindowClosedListener = null }
+  removeWindowClosedListener = window.electronAPI.onSniffWindowClosed(() => {
+    isSniffing.value = false
+    previewVisible.value = false
+    checkLoginStatus()
+  })
+
+  // 监听预览窗口中的 URL 变化（用户在预览中手动导航）
+  if (removeUrlChangedListener) { removeUrlChangedListener(); removeUrlChangedListener = null }
+  removeUrlChangedListener = window.electronAPI.onSniffUrlChanged((navUrl) => {
+    // 同步更新输入框中的 URL（仅当用户在预览中导航时）
+    if (navUrl && navUrl !== inputUrl.value) {
+      inputUrl.value = navUrl
+    }
+  })
+
   showToast('正在加载页面并分析图片，请稍候...', 'success')
   const ok = await window.electronAPI.sniffStart(url)
   if (!ok) {
     showToast('页面加载失败，请检查网址', 'error')
     isSniffing.value = false
   } else if (images.value.length > 0) {
-    showToast(`页面加载完成，发现 ${images.value.length} 张图片`, 'success')
+    showToast(`初始加载完成，已发现 ${images.value.length} 张图片，持续监听中...`, 'success')
   } else {
-    showToast('页面加载完成，尝试点击「自动滚动」加载更多图片', 'success')
+    showToast('页面加载完成，请在预览窗口操作或点击「自动滚动」加载更多', 'success')
   }
+  // 嗅探过程可能产生新 Cookie，刷新登录状态
+  await checkLoginStatus()
 }
 
 async function stopSniff(): Promise<void> {
   await window.electronAPI.sniffStop()
   isSniffing.value = false
   if (removeImageListener) { removeImageListener(); removeImageListener = null }
+  if (removeImageUpdatedListener) { removeImageUpdatedListener(); removeImageUpdatedListener = null }
 }
 
 async function autoScroll(): Promise<void> {
   isScrolling.value = true
-  const newCount = await window.electronAPI.sniffAutoScroll()
+  const result = await window.electronAPI.sniffAutoScroll()
   isScrolling.value = false
-  if (newCount > 0) {
-    showToast(`滚动完成，新发现 ${newCount} 张图片`, 'success')
+
+  // 处理 Canvas 捕获结果
+  if (result.canvasDataUrls && result.canvasDataUrls.length > 0) {
+    const existing = new Set(canvasImages.value)
+    let added = 0
+    for (const d of result.canvasDataUrls) {
+      if (!existing.has(d)) {
+        canvasImages.value.push(d)
+        selectedCanvasIdxs.value.add(canvasImages.value.length - 1)
+        existing.add(d)
+        added++
+      }
+    }
+    if (added > 0) {
+      selectedCanvasIdxs.value = new Set(selectedCanvasIdxs.value)
+    }
+  }
+
+  const parts: string[] = []
+  if (result.newNetworkImages > 0) parts.push(`${result.newNetworkImages} 张网络图片`)
+  if (result.canvasDataUrls && result.canvasDataUrls.length > 0) parts.push(`${result.canvasDataUrls.length} 张 Canvas 图片`)
+
+  if (parts.length > 0) {
+    showToast(`滚动完成，新发现 ${parts.join('、')}`, 'success')
   } else {
     showToast('滚动完成，未发现新图片', 'success')
   }
@@ -655,7 +851,10 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (removeImageListener) removeImageListener()
+  if (removeImageUpdatedListener) removeImageUpdatedListener()
   if (removeProgressListener) removeProgressListener()
+  if (removeWindowClosedListener) removeWindowClosedListener()
+  if (removeUrlChangedListener) removeUrlChangedListener()
   document.removeEventListener('click', onClickOutside)
 })
 </script>
@@ -746,6 +945,50 @@ onUnmounted(() => {
 
 .url-hint { font-size: 11px; color: @text-muted; }
 
+.url-hints {
+  .flex-col();
+  gap: 4px;
+}
+
+.login-hint {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #22c55e;
+  font-weight: 500;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  color: @text-muted;
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0 2px;
+  transition: color 0.15s;
+  &:hover { color: @text-primary; }
+}
+
+.btn-preview {
+  background: rgba(59, 130, 246, 0.12);
+  color: rgb(96, 165, 250);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  padding: 6px 12px;
+  border-radius: @radius-sm;
+  font-size: 12px;
+  font-weight: 600;
+  transition: all @transition;
+  &:hover { background: rgba(59, 130, 246, 0.2); border-color: rgba(59, 130, 246, 0.4); }
+
+  &.active {
+    background: rgba(34, 197, 94, 0.12);
+    color: #22c55e;
+    border-color: rgba(34, 197, 94, 0.3);
+    &:hover { background: rgba(34, 197, 94, 0.2); border-color: rgba(34, 197, 94, 0.4); }
+  }
+}
+
 .btn { cursor: pointer; }
 
 .btn-primary {
@@ -812,6 +1055,36 @@ onUnmounted(() => {
   padding: 4px 0;
 
   svg { color: @accent-light; }
+}
+
+// ── 持续监听提示 ──
+.sniff-live-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: rgba(34, 197, 94, 0.06);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+  border-radius: @radius-sm;
+  font-size: 12px;
+  color: @text-secondary;
+  line-height: 1.5;
+
+  > svg { color: #22c55e; flex-shrink: 0; }
+
+  strong { color: #22c55e; font-weight: 600; }
+}
+
+.focus-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: @accent-light;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  margin-left: 4px;
+  &:hover { color: @accent; text-decoration: underline; }
 }
 
 // ── 嗅探工具栏 ──

@@ -26,6 +26,12 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
   // 在线抓取 / 嗅探
   sniffStart: (url) => electron.ipcRenderer.invoke("sniff:start", url),
   sniffStop: () => electron.ipcRenderer.invoke("sniff:stop"),
+  sniffTriggerLazy: () => electron.ipcRenderer.invoke("sniff:triggerLazy"),
+  sniffTogglePreview: (visible) => electron.ipcRenderer.invoke("sniff:togglePreview", visible),
+  sniffIsPreviewVisible: () => electron.ipcRenderer.invoke("sniff:isPreviewVisible"),
+  sniffFocusPreview: () => electron.ipcRenderer.invoke("sniff:focusPreview"),
+  sniffCheckLogin: (url) => electron.ipcRenderer.invoke("sniff:checkLogin", url),
+  sniffClearCookies: (url) => electron.ipcRenderer.invoke("sniff:clearCookies", url),
   sniffGetImages: () => electron.ipcRenderer.invoke("sniff:getImages"),
   sniffExecuteJS: (code) => electron.ipcRenderer.invoke("sniff:executeJS", code),
   sniffGetCurrentURL: () => electron.ipcRenderer.invoke("sniff:getCurrentURL"),
@@ -43,10 +49,25 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
     electron.ipcRenderer.on("sniff:image-found", handler);
     return () => electron.ipcRenderer.removeListener("sniff:image-found", handler);
   },
+  onSniffImageUpdated: (callback) => {
+    const handler = (_event, data) => callback(data);
+    electron.ipcRenderer.on("sniff:image-updated", handler);
+    return () => electron.ipcRenderer.removeListener("sniff:image-updated", handler);
+  },
   onSniffDownloadProgress: (callback) => {
     const handler = (_event, data) => callback(data);
     electron.ipcRenderer.on("sniff:download-progress", handler);
     return () => electron.ipcRenderer.removeListener("sniff:download-progress", handler);
+  },
+  onSniffWindowClosed: (callback) => {
+    const handler = () => callback();
+    electron.ipcRenderer.on("sniff:window-closed", handler);
+    return () => electron.ipcRenderer.removeListener("sniff:window-closed", handler);
+  },
+  onSniffUrlChanged: (callback) => {
+    const handler = (_event, url) => callback(url);
+    electron.ipcRenderer.on("sniff:url-changed", handler);
+    return () => electron.ipcRenderer.removeListener("sniff:url-changed", handler);
   },
   // 持久化存储
   storeGet: (key) => electron.ipcRenderer.invoke("store:get", key),

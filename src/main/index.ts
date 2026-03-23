@@ -640,12 +640,22 @@ ipcMain.handle('shell:openPath', async (_event, targetPath: string): Promise<voi
   await shell.openPath(targetPath)
 })
 
-// ============ 在线抓取 / 图片嗅探 ============
+// ============ 在线抓取 / 图片嗅探（CDP 方案） ============
 
 /** 嗅探窗口状态 */
 let sniffWin: BrowserWindow | null = null
+/** 嗅探窗口是否可见（预览模式） */
+let sniffWinVisible = true
 const sniffedImages: Map<string, { url: string; size: number; contentType: string }> = new Map()
+/** 每个请求的原始请求头（用于下载时透传 Cookie/Referer） */
+const sniffedRequestHeaders: Map<string, Record<string, string>> = new Map()
 let sniffSession: Electron.Session | null = null
+/** CDP debugger 是否已附加 */
+let cdpAttached = false
+/** 当前进行中的网络请求数（用于网络空闲检测） */
+let pendingRequests = 0
+/** 最后一次网络活动时间 */
+let lastNetworkActivityTime = 0
 
 /** 图片 MIME 类型 */
 const IMAGE_MIMES = [
@@ -664,12 +674,10 @@ function isImageResource(url: string, contentType?: string): boolean {
   if (contentType) {
     const lower = contentType.toLowerCase()
     if (IMAGE_MIMES.some((m) => lower.includes(m))) return true
-    // 如果是 octet-stream，按 URL 后缀判断
     if (BINARY_MIMES.some((m) => lower.includes(m))) {
       return hasImageExt(url)
     }
   }
-  // 按 URL 后缀兜底
   return hasImageExt(url)
 }
 
@@ -682,68 +690,373 @@ function hasImageExt(url: string): boolean {
   }
 }
 
-/** 获取渲染进程主窗口 */
+/** 获取渲染进程主窗口（排除嗅探预览窗口） */
 function getMainWin(): BrowserWindow | null {
   return BrowserWindow.getAllWindows().find((w) => w !== sniffWin) ?? null
 }
 
-/** 启动嗅探：创建隐藏窗口加载 URL，拦截所有图片请求 */
-ipcMain.handle('sniff:start', async (_event, url: string): Promise<boolean> => {
-  try {
-    // 如果已有嗅探窗口，先关闭
-    if (sniffWin && !sniffWin.isDestroyed()) {
-      sniffWin.close()
+/** 等待网络空闲：连续 quietMs 毫秒内无新请求且无进行中请求 */
+function waitForNetworkIdle(quietMs = 2000, timeoutMs = 30000): Promise<void> {
+  return new Promise((resolve) => {
+    const startTime = Date.now()
+
+    const check = (): void => {
+      const now = Date.now()
+      // 超时强制返回
+      if (now - startTime > timeoutMs) {
+        resolve()
+        return
+      }
+      // 无进行中请求 且 距上次网络活动已过 quietMs
+      if (pendingRequests <= 0 && (now - lastNetworkActivityTime) >= quietMs) {
+        resolve()
+        return
+      }
+      setTimeout(check, 300)
     }
-    sniffedImages.clear()
+    // 给一个最小的初始等待
+    setTimeout(check, Math.min(quietMs, 500))
+  })
+}
 
-    // 创建独立 session（隔离主窗口 cookie）
-    sniffSession = session.fromPartition('persist:sniffer')
+/** 附加 CDP debugger 到嗅探窗口，开始监听网络 */
+function attachCDP(): void {
+  if (!sniffWin || sniffWin.isDestroyed() || cdpAttached) return
 
-    // 设置请求拦截：监听所有完成的网络请求
-    sniffSession.webRequest.onCompleted(
-      { urls: ['*://*/*'] },
-      (details) => {
-        const { url: reqUrl, statusCode, responseHeaders } = details
-        if (statusCode < 200 || statusCode >= 400) return
+  const dbg = sniffWin.webContents.debugger
+  try {
+    dbg.attach('1.3')
+    cdpAttached = true
+  } catch (err) {
+    console.error('CDP attach failed:', err)
+    return
+  }
 
-        const contentType = responseHeaders?.['content-type']?.[0]
-          ?? responseHeaders?.['Content-Type']?.[0]
-          ?? ''
-        const contentLength = parseInt(
-          responseHeaders?.['content-length']?.[0]
-            ?? responseHeaders?.['Content-Length']?.[0]
-            ?? '0',
-          10
-        )
+  // 启用 Network 域
+  dbg.sendCommand('Network.enable', {
+    maxPostDataSize: 0, // 不需要 POST body
+    maxTotalBufferSize: 0
+  }).catch(() => {})
 
-        if (isImageResource(reqUrl, contentType) && !sniffedImages.has(reqUrl)) {
-          // 过滤太小的图片（图标、占位符等），阈值 5KB
-          if (contentLength > 0 && contentLength < 5120) return
+  // ★ 禁用浏览器缓存：确保所有请求走网络，CDP 才能捕获完整的响应信息
+  // 这对于手动滚动/翻页后新出现的图片至关重要
+  dbg.sendCommand('Network.setCacheDisabled', {
+    cacheDisabled: true
+  }).catch(() => {})
 
+  // 监听 CDP 事件
+  dbg.on('message', (_event, method, params) => {
+    if (method === 'Network.requestWillBeSent') {
+      // ── 请求即将发送（第一阶段：比 responseReceived 早得多） ──
+      pendingRequests++
+      lastNetworkActivityTime = Date.now()
+
+      const reqUrl: string = params.request?.url ?? ''
+      const headers: Record<string, string> = params.request?.headers ?? {}
+
+      // 保存请求头（后续下载时透传 Cookie/Referer）
+      if (reqUrl && !sniffedRequestHeaders.has(reqUrl)) {
+        sniffedRequestHeaders.set(reqUrl, headers)
+      }
+
+      // ★ 在请求发送阶段就预录入：通过 URL 后缀判断的图片即使被缓存也能捕获
+      // 因为缓存命中时 responseReceived 可能不触发或参数不同
+      if (reqUrl && hasImageExt(reqUrl) && !sniffedImages.has(reqUrl)) {
+        sniffedImages.set(reqUrl, {
+          url: reqUrl,
+          size: 0,  // 此阶段还不知道大小
+          contentType: ''
+        })
+        const mainWin = getMainWin()
+        if (mainWin && !mainWin.isDestroyed()) {
+          mainWin.webContents.send('sniff:image-found', {
+            url: reqUrl,
+            size: 0,
+            contentType: ''
+          })
+        }
+      }
+    } else if (method === 'Network.responseReceived') {
+      // ── 收到响应头（第二阶段：精确的 Content-Type 和大小） ──
+      lastNetworkActivityTime = Date.now()
+
+      const response = params.response ?? {}
+      const reqUrl: string = response.url ?? ''
+      const mimeType: string = response.mimeType ?? ''
+      const contentLength: number = response.headers?.['content-length']
+        ? parseInt(response.headers['content-length'], 10)
+        : (response.headers?.['Content-Length'] ? parseInt(response.headers['Content-Length'], 10) : 0)
+
+      if (reqUrl && isImageResource(reqUrl, mimeType)) {
+        // 过滤太小的图片（图标、占位符等），阈值 5KB
+        if (contentLength > 0 && contentLength < 5120) return
+
+        if (!sniffedImages.has(reqUrl)) {
+          // 全新图片：录入并推送
           sniffedImages.set(reqUrl, {
             url: reqUrl,
             size: contentLength,
-            contentType
+            contentType: mimeType
           })
-
-          // 推送给渲染进程
           const mainWin = getMainWin()
           if (mainWin && !mainWin.isDestroyed()) {
             mainWin.webContents.send('sniff:image-found', {
               url: reqUrl,
               size: contentLength,
-              contentType
+              contentType: mimeType
             })
+          }
+        } else {
+          // 已在 requestWillBeSent 阶段预录入，但现在有了精确信息，更新之
+          const existing = sniffedImages.get(reqUrl)!
+          if (existing.size === 0 || !existing.contentType) {
+            existing.size = contentLength
+            existing.contentType = mimeType
+            sniffedImages.set(reqUrl, existing)
+            // 推送更新（前端可用于刷新大小显示等）
+            const mainWin = getMainWin()
+            if (mainWin && !mainWin.isDestroyed()) {
+              mainWin.webContents.send('sniff:image-updated', {
+                url: reqUrl,
+                size: contentLength,
+                contentType: mimeType
+              })
+            }
           }
         }
       }
-    )
+    } else if (method === 'Network.requestServedFromCache') {
+      // ★ 缓存命中时单独触发（responseReceived 可能不触发）
+      lastNetworkActivityTime = Date.now()
+      const requestId: string = params.requestId ?? ''
+      // requestServedFromCache 只有 requestId，没有 URL
+      // 但 requestWillBeSent 已经用 URL 预录入了，所以这里主要用于更新网络状态
+      if (requestId) {
+        pendingRequests = Math.max(0, pendingRequests - 1)
+      }
+    } else if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') {
+      // ── 请求完成或失败 ──
+      pendingRequests = Math.max(0, pendingRequests - 1)
+      lastNetworkActivityTime = Date.now()
+    }
+  })
+}
 
-    // 创建隐藏的嗅探窗口
+/** 安全分离 CDP debugger */
+function detachCDP(): void {
+  if (!cdpAttached) return
+  try {
+    if (sniffWin && !sniffWin.isDestroyed()) {
+      sniffWin.webContents.debugger.detach()
+    }
+  } catch { /* ignore */ }
+  cdpAttached = false
+  pendingRequests = 0
+}
+
+/** 触发懒加载的 JS 脚本（注入到页面） */
+const TRIGGER_LAZY_LOAD_SCRIPT = `
+  (function() {
+    const lazySrcAttrs = ['data-src', 'data-original', 'data-lazy-src', 'data-actualsrc',
+      'data-lazy', 'data-url', 'data-echo', 'data-source', 'data-origin'];
+    const imgs = document.querySelectorAll('img');
+    let triggered = 0;
+    for (const img of imgs) {
+      if (img.src && !img.src.startsWith('data:') && img.complete && img.naturalWidth > 0) continue;
+      for (const attr of lazySrcAttrs) {
+        const val = img.getAttribute(attr);
+        if (val && val.startsWith('http')) {
+          img.src = val;
+          triggered++;
+          break;
+        }
+      }
+    }
+    // 强制 eager loading
+    const lazyImgs = document.querySelectorAll('img[loading="lazy"], img[data-src]');
+    for (const img of lazyImgs) {
+      img.loading = 'eager';
+    }
+    return triggered;
+  })()
+`
+
+/** 滚动 + Canvas 捕获脚本（统一的智能滚动逻辑，同时捕获 Canvas 和触发懒加载） */
+const SCROLL_AND_CAPTURE_SCRIPT = `
+  new Promise(async (resolve) => {
+    const captured = new Set();
+    const results = [];
+
+    function findScrollContainer() {
+      const commonSelectors = [
+        '.reader-container', '.comic-container', '.manga-container',
+        '.chapter-content', '.reading-content', '.comic-content',
+        '#comic-container', '#reader', '#viewer', '#content',
+        '.viewer', '.reader', '[class*="reader"]', '[class*="viewer"]',
+        '[class*="comic"]', '[class*="manga"]',
+        '[class*="chapter"]', '[class*="scroll"]',
+        'main', 'article', '.main-content', '.page-content'
+      ];
+      for (const sel of commonSelectors) {
+        try {
+          const el = document.querySelector(sel);
+          if (el && el.scrollHeight > el.clientHeight + 100) return el;
+        } catch {}
+      }
+      const docEl = document.documentElement;
+      const body = document.body;
+      if (docEl.scrollHeight > docEl.clientHeight + 100) return docEl;
+      if (body.scrollHeight > body.clientHeight + 100) return body;
+
+      let best = null;
+      let bestH = 0;
+      for (const el of document.querySelectorAll('div, main, section, article')) {
+        const style = getComputedStyle(el);
+        if (style.overflowY === 'auto' || style.overflowY === 'scroll' || style.overflowY === 'overlay') {
+          if (el.scrollHeight > el.clientHeight + 100 && el.scrollHeight > bestH) {
+            bestH = el.scrollHeight;
+            best = el;
+          }
+        }
+      }
+      return best || docEl;
+    }
+
+    let container = findScrollContainer();
+    let isDoc = container === document.documentElement || container === document.body;
+
+    function refreshContainer() {
+      const c = findScrollContainer();
+      const d = c === document.documentElement || c === document.body;
+      const newMax = d ? document.documentElement.scrollHeight - window.innerHeight : c.scrollHeight - c.clientHeight;
+      const oldMax = isDoc ? document.documentElement.scrollHeight - window.innerHeight : container.scrollHeight - container.clientHeight;
+      if (c !== container && (newMax > oldMax * 1.2 || oldMax <= 10)) {
+        container = c;
+        isDoc = d;
+      }
+    }
+
+    const getStep = () => Math.floor((isDoc ? window.innerHeight : container.clientHeight) * 0.6);
+    const getTop = () => isDoc ? (window.scrollY || document.documentElement.scrollTop) : container.scrollTop;
+    const getMax = () => isDoc ? document.documentElement.scrollHeight - window.innerHeight : container.scrollHeight - container.clientHeight;
+    const scroll = (n) => { if (isDoc) window.scrollBy(0, n); else container.scrollTop += n; };
+
+    function captureCanvases() {
+      let count = 0;
+      for (const cvs of document.querySelectorAll('canvas')) {
+        if (cvs.width < 100 || cvs.height < 100) continue;
+        const rect = cvs.getBoundingClientRect();
+        const cRect = isDoc ? { top: 0, bottom: window.innerHeight } : container.getBoundingClientRect();
+        if (rect.bottom < cRect.top - 800 || rect.top > cRect.bottom + 800) continue;
+        try {
+          const ctx = cvs.getContext('2d');
+          if (ctx) {
+            let ok = false;
+            for (const [x,y] of [[cvs.width/2,cvs.height/2],[cvs.width/4,cvs.height/4],[cvs.width*3/4,cvs.height*3/4]]) {
+              if (ctx.getImageData(Math.floor(x),Math.floor(y),1,1).data[3] > 0) { ok = true; break; }
+            }
+            if (!ok) continue;
+          }
+          const d = cvs.toDataURL('image/png');
+          if (d && d.length > 1000 && !captured.has(d)) { captured.add(d); results.push(d); count++; }
+        } catch {}
+      }
+      return count;
+    }
+
+    function triggerLazy() {
+      const attrs = ['data-src','data-original','data-lazy-src','data-actualsrc','data-lazy','data-url','data-echo'];
+      for (const img of document.querySelectorAll('img')) {
+        if (img.src && !img.src.startsWith('data:') && img.complete && img.naturalWidth > 0) continue;
+        for (const a of attrs) { const v = img.getAttribute(a); if (v && v.startsWith('http')) { img.src = v; break; } }
+      }
+    }
+
+    // 滚到顶部
+    if (isDoc) window.scrollTo(0, 0); else container.scrollTop = 0;
+    await new Promise(r => setTimeout(r, 500));
+    refreshContainer();
+    captureCanvases();  // 初始捕获
+
+    let lastMax = 0, sameCount = 0, iterations = 0;
+    const MAX_ITER = 500;  // 与 AUTO_SCROLL_SCRIPT 保持一致
+
+    while (iterations < MAX_ITER) {
+      iterations++;
+      if (iterations % 5 === 0) refreshContainer();
+
+      triggerLazy();
+      captureCanvases();
+      scroll(getStep());
+      // 每步等待 350ms（与自动滚动一致）
+      await new Promise(r => setTimeout(r, 350));
+
+      const top = getTop(), max = getMax();
+
+      if (top >= max - 10) {
+        // 到底了，多等一会让图片和后续内容加载
+        await new Promise(r => setTimeout(r, 2000));
+        triggerLazy();
+        captureCanvases();
+        refreshContainer();
+        const newMax = getMax();
+        if (newMax > max + 30) { sameCount = 0; lastMax = newMax; continue; }
+        // 再给一次机会
+        await new Promise(r => setTimeout(r, 1500));
+        captureCanvases();
+        refreshContainer();
+        const newMax2 = getMax();
+        if (newMax2 > max + 30) { sameCount = 0; lastMax = newMax2; continue; }
+        break;
+      }
+
+      if (max === lastMax) {
+        sameCount++;
+        // 与自动滚动一致的宽松阈值
+        if (sameCount >= 15) {
+          refreshContainer();
+          const newMax = getMax();
+          if (newMax > max + 30) { sameCount = 0; lastMax = newMax; continue; }
+          // 在同高度但还没到底的情况下，继续尝试滚动
+          if (top < max - 50) { sameCount = 8; continue; }
+          break;
+        }
+      } else {
+        sameCount = 0;
+        lastMax = max;
+      }
+    }
+
+    // 最终捕获
+    triggerLazy();
+    captureCanvases();
+    resolve(results);
+  })
+`
+
+/** 启动嗅探：创建预览窗口，通过 CDP 持续监听所有网络请求 */
+ipcMain.handle('sniff:start', async (_event, url: string): Promise<boolean> => {
+  try {
+    // 如果已有嗅探窗口，先清理
+    if (sniffWin && !sniffWin.isDestroyed()) {
+      detachCDP()
+      sniffWin.close()
+    }
+    sniffedImages.clear()
+    sniffedRequestHeaders.clear()
+    pendingRequests = 0
+    lastNetworkActivityTime = Date.now()
+
+    // 创建独立 session
+    sniffSession = session.fromPartition('persist:sniffer')
+
+    // 创建可见的嗅探窗口（预览模式：用户可以实时看到页面加载过程）
     sniffWin = new BrowserWindow({
-      width: 1280,
-      height: 900,
-      show: false,
+      width: 1100,
+      height: 750,
+      show: sniffWinVisible,
+      title: '嗅探预览 - MangaBox',
+      autoHideMenuBar: true,
       webPreferences: {
         session: sniffSession,
         contextIsolation: true,
@@ -752,49 +1065,59 @@ ipcMain.handle('sniff:start', async (_event, url: string): Promise<boolean> => {
       }
     })
 
-    sniffWin.on('closed', () => {
-      sniffWin = null
+    // 同步页面标题到窗口标题
+    sniffWin.webContents.on('page-title-updated', (_e, title) => {
+      if (sniffWin && !sniffWin.isDestroyed()) {
+        sniffWin.setTitle(`${title} - MangaBox 嗅探预览`)
+      }
     })
 
+    // 通知前端嗅探窗口 URL 变化（用户在预览中手动导航时）
+    sniffWin.webContents.on('did-navigate', (_e, navUrl) => {
+      const mainWin = getMainWin()
+      if (mainWin && !mainWin.isDestroyed()) {
+        mainWin.webContents.send('sniff:url-changed', navUrl)
+      }
+    })
+    sniffWin.webContents.on('did-navigate-in-page', (_e, navUrl) => {
+      const mainWin = getMainWin()
+      if (mainWin && !mainWin.isDestroyed()) {
+        mainWin.webContents.send('sniff:url-changed', navUrl)
+      }
+    })
+
+    sniffWin.on('closed', () => {
+      detachCDP()
+      sniffWin = null
+      // 通知渲染进程嗅探窗口已被用户手动关闭
+      const mainWin = getMainWin()
+      if (mainWin && !mainWin.isDestroyed()) {
+        mainWin.webContents.send('sniff:window-closed')
+      }
+    })
+
+    // ★ 关键：在页面开始加载前就附加 CDP，这样不会遗漏任何请求
+    // CDP 会持续监听，即使 sniff:start 返回后，用户手动操作（滚动、翻页、点击）
+    // 触发的新图片请求也会被 CDP 捕获并推送到前端
+    attachCDP()
+
+    // 加载页面
     await sniffWin.loadURL(url)
 
-    // ── 页面加载完成后，等待一段时间让懒加载/异步图片完成 ──
-    // 很多网站 DOMContentLoaded 之后还有大量异步图片加载
-    await new Promise((r) => setTimeout(r, 2000))
+    // 使用网络空闲检测代替固定等待——等到连续 2 秒无新请求
+    await waitForNetworkIdle(2000, 15000)
 
-    // 尝试触发所有懒加载图片：将所有 img 的 data-src/data-original 等属性赋值给 src
+    // 触发懒加载
     try {
-      await sniffWin.webContents.executeJavaScript(`
-        (function() {
-          // 常见的懒加载属性
-          const lazySrcAttrs = ['data-src', 'data-original', 'data-lazy-src', 'data-actualsrc',
-            'data-lazy', 'data-url', 'data-echo', 'data-source', 'data-origin'];
-          const imgs = document.querySelectorAll('img');
-          let triggered = 0;
-          for (const img of imgs) {
-            if (img.src && !img.src.startsWith('data:') && img.complete && img.naturalWidth > 0) continue;
-            for (const attr of lazySrcAttrs) {
-              const val = img.getAttribute(attr);
-              if (val && val.startsWith('http')) {
-                img.src = val;
-                triggered++;
-                break;
-              }
-            }
-          }
-          // 触发 IntersectionObserver —— 把所有图片滚入视口一次
-          const allImgs = document.querySelectorAll('img[loading="lazy"], img[data-src]');
-          for (const img of allImgs) {
-            img.loading = 'eager';
-          }
-          return triggered;
-        })()
-      `)
-    } catch { /* 非致命，忽略 */ }
+      await sniffWin.webContents.executeJavaScript(TRIGGER_LAZY_LOAD_SCRIPT)
+    } catch { /* 非致命 */ }
 
-    // 再等一段时间让触发的懒加载完成网络请求
-    await new Promise((r) => setTimeout(r, 1500))
+    // 再等待网络空闲（懒加载触发的新请求）
+    await waitForNetworkIdle(2000, 10000)
 
+    // ★ 注意：此处 return 后，CDP 仍然持续工作！
+    // 用户在预览窗口中的任何操作（手动滚动、点击翻页、导航）
+    // 触发的新图片请求都会继续被 CDP 捕获并实时推送给前端
     return true
   } catch (err) {
     console.error('sniff:start failed:', err)
@@ -802,13 +1125,103 @@ ipcMain.handle('sniff:start', async (_event, url: string): Promise<boolean> => {
   }
 })
 
-/** 停止嗅探 */
+/** 停止嗅探：分离 CDP 并关闭窗口 */
 ipcMain.handle('sniff:stop', async (): Promise<void> => {
+  detachCDP()
   if (sniffWin && !sniffWin.isDestroyed()) {
     sniffWin.close()
   }
   sniffWin = null
   sniffedImages.clear()
+  sniffedRequestHeaders.clear()
+})
+
+/**
+ * 在嗅探窗口中手动触发懒加载 + 重新扫描
+ * 用于用户手动操作后，确保所有图片都被抓取
+ */
+ipcMain.handle('sniff:triggerLazy', async (): Promise<number> => {
+  if (!sniffWin || sniffWin.isDestroyed()) return 0
+  try {
+    const countBefore = sniffedImages.size
+    await sniffWin.webContents.executeJavaScript(TRIGGER_LAZY_LOAD_SCRIPT)
+    // 等待新请求完成
+    await waitForNetworkIdle(1500, 8000)
+    return sniffedImages.size - countBefore
+  } catch {
+    return 0
+  }
+})
+
+/**
+ * 切换嗅探窗口可见性（显示/隐藏预览）
+ * 如果窗口不存在，只更新 sniffWinVisible 标志供下次创建时使用
+ */
+ipcMain.handle('sniff:togglePreview', async (_event, visible: boolean): Promise<boolean> => {
+  sniffWinVisible = visible
+  if (sniffWin && !sniffWin.isDestroyed()) {
+    if (visible) {
+      sniffWin.show()
+      sniffWin.focus()
+    } else {
+      sniffWin.hide()
+    }
+  }
+  return sniffWinVisible
+})
+
+/** 获取嗅探预览窗口当前是否可见 */
+ipcMain.handle('sniff:isPreviewVisible', async (): Promise<boolean> => {
+  if (sniffWin && !sniffWin.isDestroyed()) {
+    return sniffWin.isVisible()
+  }
+  return false
+})
+
+/** 聚焦嗅探预览窗口 */
+ipcMain.handle('sniff:focusPreview', async (): Promise<void> => {
+  if (sniffWin && !sniffWin.isDestroyed()) {
+    sniffWin.show()
+    sniffWin.focus()
+  }
+})
+
+/** 检查当前嗅探 session 是否有指定 URL 的 Cookie（用于判断登录状态） */
+ipcMain.handle('sniff:checkLogin', async (_event, url: string): Promise<{ hasCookies: boolean; cookieCount: number }> => {
+  try {
+    if (!sniffSession) {
+      sniffSession = session.fromPartition('persist:sniffer')
+    }
+    const cookies = await sniffSession.cookies.get({ url })
+    return {
+      hasCookies: cookies.length > 0,
+      cookieCount: cookies.length
+    }
+  } catch {
+    return { hasCookies: false, cookieCount: 0 }
+  }
+})
+
+/** 清除嗅探 session 的所有 Cookie（用于「退出登录」） */
+ipcMain.handle('sniff:clearCookies', async (_event, url?: string): Promise<boolean> => {
+  try {
+    if (!sniffSession) return true
+    if (url) {
+      // 只清除指定 URL 的 Cookie
+      const cookies = await sniffSession.cookies.get({ url })
+      for (const cookie of cookies) {
+        const cookieUrl = `${cookie.secure ? 'https' : 'http'}://${cookie.domain?.replace(/^\./, '')}${cookie.path || '/'}`
+        await sniffSession.cookies.remove(cookieUrl, cookie.name)
+      }
+    } else {
+      // 清除所有 Cookie
+      await sniffSession.clearStorageData({ storages: ['cookies'] })
+    }
+    return true
+  } catch (err) {
+    console.error('sniff:clearCookies failed:', err)
+    return false
+  }
 })
 
 /** 获取当前已嗅探到的所有图片列表 */
@@ -816,7 +1229,7 @@ ipcMain.handle('sniff:getImages', async (): Promise<Array<{ url: string; size: n
   return Array.from(sniffedImages.values())
 })
 
-/** 在嗅探窗口中执行 JS（用于翻页、滚动等） */
+/** 在嗅探窗口中执行 JS */
 ipcMain.handle('sniff:executeJS', async (_event, code: string): Promise<unknown> => {
   if (!sniffWin || sniffWin.isDestroyed()) return null
   try {
@@ -833,11 +1246,19 @@ ipcMain.handle('sniff:getCurrentURL', async (): Promise<string> => {
   return sniffWin.webContents.getURL()
 })
 
-/** 嗅探窗口导航到新 URL */
+/** 嗅探窗口导航到新 URL（保持 CDP 持续监听） */
 ipcMain.handle('sniff:navigate', async (_event, url: string): Promise<boolean> => {
   if (!sniffWin || sniffWin.isDestroyed()) return false
   try {
+    // CDP 保持附加状态，导航产生的新请求会继续被捕获
     await sniffWin.loadURL(url)
+    // 等待初始加载
+    await waitForNetworkIdle(2000, 10000)
+    // 触发懒加载
+    try {
+      await sniffWin.webContents.executeJavaScript(TRIGGER_LAZY_LOAD_SCRIPT)
+    } catch { /* 非致命 */ }
+    await waitForNetworkIdle(1500, 8000)
     return true
   } catch {
     return false
@@ -847,241 +1268,58 @@ ipcMain.handle('sniff:navigate', async (_event, url: string): Promise<boolean> =
 /** 清空已嗅探的图片列表 */
 ipcMain.handle('sniff:clearImages', async (): Promise<void> => {
   sniffedImages.clear()
+  sniffedRequestHeaders.clear()
 })
 
-/** 自动滚动嗅探页面（触发懒加载） */
-ipcMain.handle('sniff:autoScroll', async (): Promise<number> => {
-  if (!sniffWin || sniffWin.isDestroyed()) return 0
+/** 自动滚动嗅探页面（触发懒加载 + Canvas 捕获） */
+ipcMain.handle('sniff:autoScroll', async (): Promise<{ newNetworkImages: number; canvasDataUrls: string[] }> => {
+  if (!sniffWin || sniffWin.isDestroyed()) return { newNetworkImages: 0, canvasDataUrls: [] }
   try {
     const countBefore = sniffedImages.size
 
-    // 注入智能滚动脚本：
-    // 1. 动态检测页面的实际滚动容器（滚动过程中会周期性重新检测）
-    // 2. 分步缓慢滚动，每步等待足够时间让图片加载
-    // 3. 同时触发懒加载属性
-    await sniffWin.webContents.executeJavaScript(`
-      new Promise(async (resolve) => {
-        // ── 检测滚动容器 ──
-        function findScrollContainer() {
-          // 优先检查常见的漫画阅读器容器选择器
-          const commonSelectors = [
-            '.reader-container', '.comic-container', '.manga-container',
-            '.chapter-content', '.reading-content', '.comic-content',
-            '#comic-container', '#reader', '#viewer', '#content',
-            '.viewer', '.reader', '[class*="reader"]', '[class*="viewer"]',
-            '[class*="comic"]', '[class*="manga"]'
-          ];
-          for (const sel of commonSelectors) {
-            try {
-              const el = document.querySelector(sel);
-              if (el && el.scrollHeight > el.clientHeight + 100) return el;
-            } catch {}
-          }
+    // ★ 使用带 Canvas 捕获的滚动脚本（统一逻辑）
+    // 这样对 Canvas 渲染的漫画网站（如 CCC 漫画）也能在自动滚动时同步捕获
+    const canvasDataUrls: string[] = await sniffWin.webContents.executeJavaScript(SCROLL_AND_CAPTURE_SCRIPT, true) || []
 
-          // 检查 body 和 documentElement
-          const docEl = document.documentElement;
-          const body = document.body;
-          if (docEl.scrollHeight > docEl.clientHeight + 100) return docEl;
-          if (body.scrollHeight > body.clientHeight + 100) return body;
+    // 滚动完成后，用网络空闲检测等待最后一批请求完成
+    await waitForNetworkIdle(2500, 15000)
 
-          // 查找页面中最大的可滚动元素
-          let best = null;
-          let bestH = 0;
-          const allEls = document.querySelectorAll('div, main, section, article');
-          for (const el of allEls) {
-            const style = getComputedStyle(el);
-            const overflowY = style.overflowY;
-            if (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay') {
-              if (el.scrollHeight > el.clientHeight + 100 && el.scrollHeight > bestH) {
-                bestH = el.scrollHeight;
-                best = el;
-              }
-            }
-          }
-          return best || docEl;
-        }
-
-        // ── 封装滚动状态，支持动态切换容器 ──
-        let container = findScrollContainer();
-        let isDocScroll = container === document.documentElement || container === document.body;
-        let redetectCounter = 0;
-        const REDETECT_INTERVAL = 10; // 每滚动 10 步重新检测一次容器
-
-        function getViewHeight() {
-          return isDocScroll ? window.innerHeight : container.clientHeight;
-        }
-        function getStep() {
-          return Math.floor(getViewHeight() * 0.7);
-        }
-        function getScrollTop() {
-          return isDocScroll ? (window.scrollY || window.pageYOffset || document.documentElement.scrollTop) : container.scrollTop;
-        }
-        function getScrollMax() {
-          return isDocScroll
-            ? document.documentElement.scrollHeight - window.innerHeight
-            : container.scrollHeight - container.clientHeight;
-        }
-        function doScroll(amount) {
-          if (isDocScroll) window.scrollBy(0, amount);
-          else container.scrollTop += amount;
-        }
-
-        // 重新检测容器：如果发现更大/更合适的容器就切换
-        function redetectContainer() {
-          const newContainer = findScrollContainer();
-          const newIsDoc = newContainer === document.documentElement || newContainer === document.body;
-          // 计算新容器的可滚动高度
-          const newScrollable = newIsDoc
-            ? document.documentElement.scrollHeight - window.innerHeight
-            : newContainer.scrollHeight - newContainer.clientHeight;
-          const oldScrollable = getScrollMax();
-
-          // 如果新容器可滚动范围明显更大，或者旧容器已经不可滚动了，则切换
-          if (newContainer !== container && (newScrollable > oldScrollable * 1.5 || oldScrollable <= 10)) {
-            container = newContainer;
-            isDocScroll = newIsDoc;
-          }
-        }
-
-        // 触发懒加载的辅助函数
-        function triggerLazyLoad() {
-          const lazySrcAttrs = ['data-src', 'data-original', 'data-lazy-src', 'data-actualsrc',
-            'data-lazy', 'data-url', 'data-echo'];
-          const imgs = document.querySelectorAll('img');
-          for (const img of imgs) {
-            if (img.src && !img.src.startsWith('data:') && img.complete && img.naturalWidth > 0) continue;
-            for (const attr of lazySrcAttrs) {
-              const val = img.getAttribute(attr);
-              if (val && val.startsWith('http')) { img.src = val; break; }
-            }
-          }
-        }
-
-        // 滚到顶部
-        if (isDocScroll) window.scrollTo(0, 0);
-        else container.scrollTop = 0;
-        await new Promise(r => setTimeout(r, 500));
-
-        // 初始等待后重新检测一次（页面可能在这 500ms 内加载了图片导致布局变化）
-        redetectContainer();
-
-        let lastScrollMax = 0;
-        let sameCount = 0;
-        let iterations = 0;
-        const maxIterations = 200; // 安全上限
-
-        while (iterations < maxIterations) {
-          iterations++;
-          redetectCounter++;
-
-          // 周期性重新检测滚动容器
-          if (redetectCounter >= REDETECT_INTERVAL) {
-            redetectCounter = 0;
-            redetectContainer();
-          }
-
-          triggerLazyLoad();
-          doScroll(getStep()); // 每次动态计算步长
-          // 每步等待 500ms 让图片请求发出并被拦截
-          await new Promise(r => setTimeout(r, 500));
-
-          const scrollTop = getScrollTop();
-          const scrollMax = getScrollMax();
-
-          // 检查是否到底
-          if (scrollTop >= scrollMax - 10) {
-            // 到底了，等一会让图片加载（可能加载后高度会变）
-            await new Promise(r => setTimeout(r, 1500));
-            triggerLazyLoad();
-            // 重新检测容器和高度——图片加载后布局可能完全不同
-            redetectContainer();
-            const newScrollMax = getScrollMax();
-            if (newScrollMax > scrollMax + 50) {
-              // 高度增长了，说明有新图片加载进来，继续滚动
-              sameCount = 0;
-              lastScrollMax = newScrollMax;
-              continue;
-            }
-            break;
-          }
-
-          // 检查页面高度是否还在增长（动态加载）
-          if (scrollMax === lastScrollMax) {
-            sameCount++;
-            if (sameCount >= 8) {
-              // 高度 8 次不变，但先重新检测容器确认一下
-              redetectContainer();
-              const finalMax = getScrollMax();
-              if (finalMax > scrollMax + 50) {
-                // 切换了容器或高度变了，重置计数继续
-                sameCount = 0;
-                lastScrollMax = finalMax;
-                continue;
-              }
-              break;
-            }
-          } else {
-            sameCount = 0;
-            lastScrollMax = scrollMax;
-          }
-        }
-
-        // 最后一次触发懒加载
-        triggerLazyLoad();
-        resolve(iterations);
-      })
-    `)
-
-    // 等待最后一批网络请求完成
-    await new Promise((r) => setTimeout(r, 2000))
-    return sniffedImages.size - countBefore
+    return {
+      newNetworkImages: sniffedImages.size - countBefore,
+      canvasDataUrls
+    }
   } catch (err) {
     console.error('sniff:autoScroll failed:', err)
-    return 0
+    return { newNetworkImages: 0, canvasDataUrls: [] }
   }
 })
 
-/** 从页面中的 Canvas 元素提取图片（用于 Canvas 渲染的漫画网站） */
+/** 从页面中的 Canvas 元素提取图片 */
 ipcMain.handle('sniff:captureCanvas', async (): Promise<string[]> => {
   if (!sniffWin || sniffWin.isDestroyed()) return []
   try {
-    // 注入脚本：找到所有有实际内容的 canvas，导出为 data URL
     const dataUrls: string[] = await sniffWin.webContents.executeJavaScript(`
       (function() {
         const results = [];
-        const allCanvas = document.querySelectorAll('canvas');
-        for (const cvs of allCanvas) {
-          // 过滤太小的 canvas（广告、按钮等），至少 100x100
+        for (const cvs of document.querySelectorAll('canvas')) {
           if (cvs.width < 100 || cvs.height < 100) continue;
           try {
-            // 尝试 2d context
-            let ctx = cvs.getContext('2d');
+            const ctx = cvs.getContext('2d');
             if (ctx) {
-              // 多点采样检测是否有实际内容
               let hasContent = false;
-              const samplePoints = [
-                [cvs.width/2, cvs.height/2],
-                [cvs.width/4, cvs.height/4],
-                [cvs.width*3/4, cvs.height/4],
-                [cvs.width/4, cvs.height*3/4],
-                [cvs.width*3/4, cvs.height*3/4],
-                [cvs.width/2, cvs.height/4],
+              for (const [x, y] of [
+                [cvs.width/2, cvs.height/2], [cvs.width/4, cvs.height/4],
+                [cvs.width*3/4, cvs.height/4], [cvs.width/4, cvs.height*3/4],
+                [cvs.width*3/4, cvs.height*3/4], [cvs.width/2, cvs.height/4],
                 [cvs.width/2, cvs.height*3/4]
-              ];
-              for (const [x, y] of samplePoints) {
-                const p = ctx.getImageData(Math.floor(x), Math.floor(y), 1, 1).data;
-                if (p[3] > 0) { hasContent = true; break; }
+              ]) {
+                if (ctx.getImageData(Math.floor(x), Math.floor(y), 1, 1).data[3] > 0) { hasContent = true; break; }
               }
               if (!hasContent) continue;
             }
-            // 对于 WebGL canvas，getContext('2d') 返回 null，但仍可 toDataURL
-            const dataUrl = cvs.toDataURL('image/png');
-            if (dataUrl && dataUrl.length > 1000) {
-              results.push(dataUrl);
-            }
-          } catch(e) {
-            // toDataURL 可能因跨域 taint 抛异常，忽略
-          }
+            const d = cvs.toDataURL('image/png');
+            if (d && d.length > 1000) results.push(d);
+          } catch {}
         }
         return results;
       })()
@@ -1093,248 +1331,14 @@ ipcMain.handle('sniff:captureCanvas', async (): Promise<string[]> => {
   }
 })
 
-/** 自动滚动 + Canvas 连续捕获（专为 Canvas 渲染的漫画设计） */
+/** 自动滚动 + Canvas 连续捕获 */
 ipcMain.handle('sniff:scrollAndCapture', async (): Promise<string[]> => {
   if (!sniffWin || sniffWin.isDestroyed()) return []
   try {
     const mainWin = getMainWin()
 
-    // 注入脚本：动态检测滚动容器，逐步滚动并捕获 Canvas
-    const allDataUrls: string[] = await sniffWin.webContents.executeJavaScript(`
-      new Promise(async (resolve) => {
-        const captured = new Set();
-        const results = [];
+    const allDataUrls: string[] = await sniffWin.webContents.executeJavaScript(SCROLL_AND_CAPTURE_SCRIPT, true)
 
-        // ── 检测滚动容器 ──
-        function findScrollContainer() {
-          const commonSelectors = [
-            '.reader-container', '.comic-container', '.manga-container',
-            '.chapter-content', '.reading-content', '.comic-content',
-            '#comic-container', '#reader', '#viewer', '#content',
-            '.viewer', '.reader', '[class*="reader"]', '[class*="viewer"]',
-            '[class*="comic"]', '[class*="manga"]'
-          ];
-          for (const sel of commonSelectors) {
-            try {
-              const el = document.querySelector(sel);
-              if (el && el.scrollHeight > el.clientHeight + 100) return el;
-            } catch {}
-          }
-          const docEl = document.documentElement;
-          const body = document.body;
-          if (docEl.scrollHeight > docEl.clientHeight + 100) return docEl;
-          if (body.scrollHeight > body.clientHeight + 100) return body;
-
-          let best = null;
-          let bestH = 0;
-          const allEls = document.querySelectorAll('div, main, section, article');
-          for (const el of allEls) {
-            const style = getComputedStyle(el);
-            const overflowY = style.overflowY;
-            if (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay') {
-              if (el.scrollHeight > el.clientHeight + 100 && el.scrollHeight > bestH) {
-                bestH = el.scrollHeight;
-                best = el;
-              }
-            }
-          }
-          return best || docEl;
-        }
-
-        // ── 封装滚动状态，支持动态切换容器 ──
-        let container = findScrollContainer();
-        let isDocScroll = container === document.documentElement || container === document.body;
-        let redetectCounter = 0;
-        const REDETECT_INTERVAL = 8; // 每滚动 8 步重新检测
-
-        function getViewHeight() {
-          return isDocScroll ? window.innerHeight : container.clientHeight;
-        }
-        function getStep() {
-          // Canvas 渲染需要更小的步长
-          return Math.floor(getViewHeight() * 0.6);
-        }
-        function getScrollTop() {
-          return isDocScroll ? (window.scrollY || window.pageYOffset) : container.scrollTop;
-        }
-        function getScrollMax() {
-          return isDocScroll
-            ? document.documentElement.scrollHeight - window.innerHeight
-            : container.scrollHeight - container.clientHeight;
-        }
-        function doScroll(amount) {
-          if (isDocScroll) window.scrollBy(0, amount);
-          else container.scrollTop += amount;
-        }
-
-        // 重新检测容器：如果发现更大/更合适的容器就切换
-        function redetectContainer() {
-          const newContainer = findScrollContainer();
-          const newIsDoc = newContainer === document.documentElement || newContainer === document.body;
-          const newScrollable = newIsDoc
-            ? document.documentElement.scrollHeight - window.innerHeight
-            : newContainer.scrollHeight - newContainer.clientHeight;
-          const oldScrollable = getScrollMax();
-
-          if (newContainer !== container && (newScrollable > oldScrollable * 1.5 || oldScrollable <= 10)) {
-            container = newContainer;
-            isDocScroll = newIsDoc;
-          }
-        }
-
-        function captureVisibleCanvases() {
-          const allCanvas = document.querySelectorAll('canvas');
-          let newCount = 0;
-          for (const cvs of allCanvas) {
-            if (cvs.width < 100 || cvs.height < 100) continue;
-            const rect = cvs.getBoundingClientRect();
-            const containerRect = isDocScroll
-              ? { top: 0, bottom: window.innerHeight }
-              : container.getBoundingClientRect();
-            const inView = rect.bottom > containerRect.top - 800
-              && rect.top < containerRect.bottom + 800;
-            if (!inView) continue;
-            try {
-              let ctx = cvs.getContext('2d');
-              if (ctx) {
-                let hasContent = false;
-                const checkPoints = [
-                  [cvs.width/2, cvs.height/2],
-                  [cvs.width/4, cvs.height/4],
-                  [cvs.width*3/4, cvs.height*3/4],
-                  [cvs.width/2, cvs.height/4],
-                  [cvs.width/2, cvs.height*3/4]
-                ];
-                for (const [x, y] of checkPoints) {
-                  const p = ctx.getImageData(Math.floor(x), Math.floor(y), 1, 1).data;
-                  if (p[3] > 0) { hasContent = true; break; }
-                }
-                if (!hasContent) continue;
-              }
-              const dataUrl = cvs.toDataURL('image/png');
-              if (dataUrl && dataUrl.length > 1000 && !captured.has(dataUrl)) {
-                captured.add(dataUrl);
-                results.push(dataUrl);
-                newCount++;
-              }
-            } catch(e) { /* tainted canvas */ }
-          }
-          return newCount;
-        }
-
-        // 滚到顶部
-        if (isDocScroll) window.scrollTo(0, 0);
-        else container.scrollTop = 0;
-        // 等待 Canvas 渲染初始内容
-        await new Promise(r => setTimeout(r, 1000));
-
-        // 初始等待后重新检测容器
-        redetectContainer();
-
-        let lastScrollMax = 0;
-        let sameCount = 0;
-        let noNewCapture = 0;
-        let iterations = 0;
-        const maxIterations = 300; // 安全上限
-
-        while (iterations < maxIterations) {
-          iterations++;
-          redetectCounter++;
-
-          // 周期性重新检测滚动容器
-          if (redetectCounter >= REDETECT_INTERVAL) {
-            redetectCounter = 0;
-            redetectContainer();
-          }
-
-          // 捕获当前可见的 canvas
-          const newFound = captureVisibleCanvases();
-
-          doScroll(getStep()); // 动态计算步长
-          // 等待 Canvas 渲染新内容（Canvas 渲染比 img 慢）
-          await new Promise(r => setTimeout(r, 800));
-
-          const scrollTop = getScrollTop();
-          const scrollMax = getScrollMax();
-
-          // 到底检测
-          if (scrollTop >= scrollMax - 10) {
-            // 到底了，多等一下让渲染/网络完成
-            await new Promise(r => setTimeout(r, 1500));
-            captureVisibleCanvases();
-            // 重新检测容器——图片/Canvas 加载后布局可能变化
-            redetectContainer();
-            const newMax = getScrollMax();
-            if (newMax > scrollMax + 50) {
-              // 高度增长了，继续滚动
-              sameCount = 0;
-              lastScrollMax = newMax;
-              continue;
-            }
-            // 尝试再滚一步确认
-            doScroll(getStep());
-            await new Promise(r => setTimeout(r, 800));
-            const finalMax = getScrollMax();
-            if (finalMax > scrollMax + 50) {
-              sameCount = 0;
-              lastScrollMax = finalMax;
-              continue;
-            }
-            // 确实到底了
-            captureVisibleCanvases();
-            break;
-          }
-
-          // 高度不变检测
-          if (scrollMax === lastScrollMax) {
-            sameCount++;
-          } else {
-            sameCount = 0;
-            lastScrollMax = scrollMax;
-          }
-
-          // 没有新 canvas 内容检测
-          if (newFound === 0) {
-            noNewCapture++;
-          } else {
-            noNewCapture = 0;
-          }
-
-          // 连续多次高度不变 且 没有新捕获 才退出
-          if (sameCount >= 8 && noNewCapture >= 5) {
-            // 退出前重新检测容器做最后确认
-            redetectContainer();
-            const confirmMax = getScrollMax();
-            if (confirmMax > scrollMax + 50) {
-              sameCount = 0;
-              noNewCapture = 0;
-              lastScrollMax = confirmMax;
-              continue;
-            }
-            break;
-          }
-
-          // 仅高度不变但还有新捕获，继续（Canvas 可能是固定容器高度，但内容在变）
-          if (sameCount >= 15) {
-            // 绝对上限前也重检一次
-            redetectContainer();
-            const confirmMax2 = getScrollMax();
-            if (confirmMax2 > scrollMax + 50) {
-              sameCount = 0;
-              lastScrollMax = confirmMax2;
-              continue;
-            }
-            break;
-          }
-        }
-
-        // 最终全量捕获一次
-        captureVisibleCanvases();
-        resolve(results);
-      })
-    `, true)
-
-    // 通知进度
     if (mainWin && !mainWin.isDestroyed()) {
       mainWin.webContents.send('sniff:download-progress', {
         current: allDataUrls?.length || 0,
@@ -1568,19 +1572,54 @@ ipcMain.handle(
   }
 )
 
-/** 下载图片并保存到指定目录（带重试） */
+/**
+ * 从嗅探 session 中获取指定 URL 的 Cookie 字符串
+ * （用于下载时透传，解决某些 CDN 需要登录态的问题）
+ */
+async function getSessionCookies(url: string): Promise<string> {
+  try {
+    if (!sniffSession) return ''
+    const cookies = await sniffSession.cookies.get({ url })
+    return cookies.map((c) => `${c.name}=${c.value}`).join('; ')
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 下载图片并保存到指定目录（带重试 + Cookie 透传）
+ * 优先使用 CDP 捕获的原始请求头（含 Cookie/Referer），
+ * 如果没有则从 sniffSession.cookies 获取 Cookie 作为兜底
+ */
 function downloadImage(imageUrl: string, destPath: string, retries = 3): Promise<boolean> {
   return new Promise((resolve) => {
-    const doDownload = (attempt: number): void => {
+    const doDownload = async (attempt: number): Promise<void> => {
       try {
         const urlObj = new URL(imageUrl)
         const getter = urlObj.protocol === 'https:' ? httpsGet : httpGet
-        const req = getter(imageUrl, {
-          headers: {
-            'Referer': urlObj.origin,
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-          }
-        }, (res) => {
+
+        // ★ 构建请求头：优先透传 CDP 捕获的原始请求头
+        const originalHeaders = sniffedRequestHeaders.get(imageUrl)
+        const headers: Record<string, string> = {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Referer': originalHeaders?.['Referer'] || originalHeaders?.['referer'] || urlObj.origin,
+          'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+        }
+
+        // 透传 Cookie：优先用 CDP 捕获的，其次从 session 获取
+        if (originalHeaders?.['Cookie'] || originalHeaders?.['cookie']) {
+          headers['Cookie'] = originalHeaders['Cookie'] || originalHeaders['cookie']
+        } else {
+          const sessionCookie = await getSessionCookies(imageUrl)
+          if (sessionCookie) headers['Cookie'] = sessionCookie
+        }
+
+        // 透传其他关键请求头
+        if (originalHeaders?.['Origin'] || originalHeaders?.['origin']) {
+          headers['Origin'] = originalHeaders['Origin'] || originalHeaders['origin']
+        }
+
+        const req = getter(imageUrl, { headers }, (res) => {
           // 跟随重定向
           if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
             downloadImage(res.headers.location, destPath, attempt).then(resolve)

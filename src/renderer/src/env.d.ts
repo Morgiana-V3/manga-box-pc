@@ -85,12 +85,18 @@ interface ElectronAPI {
   // 在线抓取 / 嗅探
   sniffStart: (url: string) => Promise<boolean>
   sniffStop: () => Promise<void>
+  sniffTriggerLazy: () => Promise<number>
+  sniffTogglePreview: (visible: boolean) => Promise<boolean>
+  sniffIsPreviewVisible: () => Promise<boolean>
+  sniffFocusPreview: () => Promise<void>
+  sniffCheckLogin: (url: string) => Promise<{ hasCookies: boolean; cookieCount: number }>
+  sniffClearCookies: (url?: string) => Promise<boolean>
   sniffGetImages: () => Promise<SniffedImage[]>
   sniffExecuteJS: (code: string) => Promise<unknown>
   sniffGetCurrentURL: () => Promise<string>
   sniffNavigate: (url: string) => Promise<boolean>
   sniffClearImages: () => Promise<void>
-  sniffAutoScroll: () => Promise<number>
+  sniffAutoScroll: () => Promise<{ newNetworkImages: number; canvasDataUrls: string[] }>
   sniffCaptureCanvas: () => Promise<string[]>
   sniffScrollAndCapture: () => Promise<string[]>
   sniffSaveDataUrlsToLibrary: (dataUrls: string[], title: string, libraryDir: string) => Promise<boolean>
@@ -106,7 +112,10 @@ interface ElectronAPI {
   }) => Promise<{ ok: boolean; savedCount: number }>
   sniffGetSeriesList: (libraryDir: string) => Promise<SeriesInfo[]>
   onSniffImageFound: (callback: (data: SniffedImage) => void) => () => void
+  onSniffImageUpdated: (callback: (data: SniffedImage) => void) => () => void
   onSniffDownloadProgress: (callback: (data: DownloadProgress) => void) => () => void
+  onSniffWindowClosed: (callback: () => void) => () => void
+  onSniffUrlChanged: (callback: (url: string) => void) => () => void
   // 持久化存储
   storeGet: (key: string) => Promise<unknown>
   storeSet: (key: string, value: unknown) => Promise<void>
