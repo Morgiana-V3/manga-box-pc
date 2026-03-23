@@ -13,6 +13,7 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
   getDefaultLibraryDir: () => electron.ipcRenderer.invoke("fs:getDefaultLibraryDir"),
   importBook: (sourcePath, destDir) => electron.ipcRenderer.invoke("fs:importBook", sourcePath, destDir),
   removeBook: (bookPath) => electron.ipcRenderer.invoke("fs:removeBook", bookPath),
+  deletePages: (bookPath, pageKeys) => electron.ipcRenderer.invoke("fs:deletePages", bookPath, pageKeys),
   createSeries: (libraryDir, seriesName) => electron.ipcRenderer.invoke("fs:createSeries", libraryDir, seriesName),
   // 文件系统
   scanLibrary: (folderPath) => electron.ipcRenderer.invoke("fs:scanLibrary", folderPath),

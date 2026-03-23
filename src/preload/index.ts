@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('fs:importBook', sourcePath, destDir),
   removeBook: (bookPath: string): Promise<boolean> =>
     ipcRenderer.invoke('fs:removeBook', bookPath),
+  deletePages: (bookPath: string, pageKeys: string[]): Promise<boolean> =>
+    ipcRenderer.invoke('fs:deletePages', bookPath, pageKeys),
   createSeries: (libraryDir: string, seriesName: string): Promise<boolean> =>
     ipcRenderer.invoke('fs:createSeries', libraryDir, seriesName),
 

@@ -56,6 +56,7 @@ interface ElectronAPI {
   getDefaultLibraryDir: () => Promise<string>
   importBook: (sourcePath: string, destDir: string) => Promise<boolean>
   removeBook: (bookPath: string) => Promise<boolean>
+  deletePages: (bookPath: string, pageKeys: string[]) => Promise<boolean>
   createSeries: (libraryDir: string, seriesName: string) => Promise<boolean>
   scanLibrary: (folderPath: string) => Promise<Book[]>
   getPages: (bookPath: string, bookType: 'folder' | 'archive') => Promise<string[]>

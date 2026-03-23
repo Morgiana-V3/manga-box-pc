@@ -510,6 +510,28 @@ ipcMain.handle(
 )
 
 /**
+ * 删除单话中的指定页面文件（移入回收站）
+ * pageKeys: 要删除的文件名数组
+ */
+ipcMain.handle(
+  'fs:deletePages',
+  async (_event, bookPath: string, pageKeys: string[]): Promise<boolean> => {
+    try {
+      for (const key of pageKeys) {
+        const filePath = join(bookPath, key)
+        if (existsSync(filePath)) {
+          await shell.trashItem(filePath)
+        }
+      }
+      return true
+    } catch (err) {
+      console.error('deletePages failed:', err)
+      return false
+    }
+  }
+)
+
+/**
  * 按新顺序重命名图片文件（用于单本编辑）
  * filenames: 当前图片文件名，按新的期望顺序传入
  */

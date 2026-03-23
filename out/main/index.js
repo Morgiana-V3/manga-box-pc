@@ -350,6 +350,23 @@ electron.ipcMain.handle(
   }
 );
 electron.ipcMain.handle(
+  "fs:deletePages",
+  async (_event, bookPath, pageKeys) => {
+    try {
+      for (const key of pageKeys) {
+        const filePath = path.join(bookPath, key);
+        if (fs.existsSync(filePath)) {
+          await electron.shell.trashItem(filePath);
+        }
+      }
+      return true;
+    } catch (err) {
+      console.error("deletePages failed:", err);
+      return false;
+    }
+  }
+);
+electron.ipcMain.handle(
   "fs:renamePages",
   async (_event, bookPath, filenames) => {
     try {

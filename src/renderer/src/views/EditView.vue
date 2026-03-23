@@ -9,9 +9,25 @@
       </button>
       <div class="header-info">
         <h2>编辑{{ isSeries ? '系列' : '漫画' }}</h2>
-        <span class="header-sub">拖拽缩略图可调整顺序</span>
+        <span class="header-sub">拖拽缩略图可调整顺序，拖到右上角垃圾桶可删除</span>
       </div>
       <div class="header-actions">
+        <!-- 垃圾桶：拖拽时在取消按钮左侧显示 -->
+        <Transition name="trash-fade">
+          <div
+            v-if="dragKey"
+            ref="trashRef"
+            class="header-trash"
+            :class="{ hover: trashHover }"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <polyline points="3 6 5 6 21 6"/>
+              <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+              <line x1="10" y1="11" x2="10" y2="17"/>
+              <line x1="14" y1="11" x2="14" y2="17"/>
+            </svg>
+          </div>
+        </Transition>
         <button class="btn btn-ghost" @click="goBack" :disabled="isSaving">取消</button>
         <button class="btn btn-primary" @click="handleSave" :disabled="isSaving || isLoading">
           <svg v-if="isSaving" class="spinning" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -105,12 +121,21 @@
         </div>
 
         <p v-if="isSeries" class="field-hint">双击话数名称可重命名；拖拽封面调整顺序</p>
+
+        <!-- 已删除项提示 -->
+        <div v-if="deletedItems.length > 0" class="deleted-hint">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/>
+            <line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+          <span>已标记删除 {{ deletedItems.length }} {{ isSeries ? '话' : '页' }}，保存后生效</span>
+        </div>
       </div>
     </div>
 
     <!-- 跟手 Ghost（Teleport 到 body） -->
     <Teleport to="body">
-      <div v-if="ghost" class="drag-ghost-fixed" :style="ghostStyle">
+      <div v-if="ghost" class="drag-ghost-fixed" :class="{ 'over-trash': trashHover }" :style="ghostStyle">
         <img v-if="ghost.src" :src="ghost.src" draggable="false" />
         <div v-else class="ghost-placeholder">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
@@ -119,6 +144,33 @@
         </div>
       </div>
     </Teleport>
+
+    <!-- 删除确认弹窗 -->
+    <Transition name="fade">
+      <div v-if="deleteConfirm" class="modal-backdrop" @click.self="cancelDelete">
+        <div class="modal-card">
+          <h3 class="modal-title">确认删除</h3>
+          <p class="modal-desc">
+            确定要删除{{ isSeries ? '这一话' : '这一页' }}吗？保存后将无法恢复。
+          </p>
+          <div class="delete-preview">
+            <div class="delete-preview-cover">
+              <img v-if="deleteConfirm.src" :src="deleteConfirm.src" draggable="false" />
+              <div v-else class="cover-placeholder">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                  <path d="M4 19V5a2 2 0 012-2h12a2 2 0 012 2v14M4 19h14a2 2 0 010 4H4v-4z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+              </div>
+            </div>
+            <span class="delete-preview-name">{{ deleteConfirm.name }}</span>
+          </div>
+          <div class="modal-actions">
+            <button class="btn btn-ghost" @click="cancelDelete">取消</button>
+            <button class="btn btn-danger" @click="confirmDelete">删除</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
 
     <!-- Toast -->
     <Transition name="toast">
@@ -136,6 +188,12 @@ interface EditItem {
   key: string           // 原始文件名/目录名
   name: string          // 显示名（可编辑）
   originalName: string  // 编辑前的名字（用于取消还原）
+  src: string
+}
+
+interface DeletedItem {
+  key: string
+  name: string
   src: string
 }
 
@@ -194,6 +252,16 @@ const isLoading = ref(true)
 const isSaving = ref(false)
 const editTitle = ref('')
 const items = ref<EditItem[]>([])
+
+// ─── 已删除的项（保存时才真正删除文件） ───
+const deletedItems = ref<DeletedItem[]>([])
+
+// ─── 垃圾桶拖放区状态 ───
+const trashHover = ref(false)
+const trashRef = ref<HTMLElement | null>(null)
+
+// ─── 删除确认弹窗 ───
+const deleteConfirm = ref<{ key: string; name: string; src: string } | null>(null)
 
 // ─── 内联编辑（系列话数名） ───
 const editingKey = ref<string | null>(null)
@@ -268,16 +336,64 @@ function onPointerMove(e: PointerEvent): void {
   ghostX.value = e.clientX - ghostOffsetX
   ghostY.value = e.clientY - ghostOffsetY
 
+  // 检测 Ghost 图片是否与垃圾桶区域重叠（矩形碰撞检测）
+  if (trashRef.value && ghost.value) {
+    const trashRect = trashRef.value.getBoundingClientRect()
+    // Ghost 的实际矩形范围
+    const gx = ghostX.value
+    const gy = ghostY.value
+    const gw = ghost.value.w
+    const gh = gw * 1.5 // aspect-ratio 2/3
+    // 两个矩形有任意重叠即命中
+    trashHover.value =
+      gx < trashRect.right &&
+      gx + gw > trashRect.left &&
+      gy < trashRect.bottom &&
+      gy + gh > trashRect.top
+  }
+
   insertIdx.value = findInsertIdx(e.clientX, e.clientY)
 }
 
 function onPointerUp(): void {
-  if (dragKey.value && insertIdx.value >= 0) {
-    // renderItems 此时已经是正确的新顺序，直接采用即可
-    // 注意：renderItems 返回的是新数组，直接赋给 items
+  if (!dragKey.value) { cleanupDrag(); return }
+
+  // 如果松手时位于垃圾桶上 → 弹出确认删除
+  if (trashHover.value) {
+    const item = items.value.find((i) => i.key === dragKey.value)
+    if (item) {
+      deleteConfirm.value = { key: item.key, name: item.name, src: item.src }
+    }
+    trashHover.value = false
+    cleanupDrag()
+    return
+  }
+
+  if (insertIdx.value >= 0) {
     items.value = renderItems.value.slice()
   }
   cleanupDrag()
+}
+
+// ─── 删除确认操作 ───
+function confirmDelete(): void {
+  if (!deleteConfirm.value) return
+  const { key, name, src } = deleteConfirm.value
+
+  // 从 items 中移除
+  const idx = items.value.findIndex((i) => i.key === key)
+  if (idx >= 0) {
+    items.value.splice(idx, 1)
+  }
+
+  // 记录到已删除列表（保存时才真正操作文件系统）
+  deletedItems.value.push({ key, name, src })
+  deleteConfirm.value = null
+  showToast(`已标记删除「${name}」，保存后生效`, 'success')
+}
+
+function cancelDelete(): void {
+  deleteConfirm.value = null
 }
 
 function findInsertIdx(cx: number, cy: number): number {
@@ -402,6 +518,14 @@ async function handleSave(): Promise<void> {
     }
 
     if (isSeries.value) {
+      // 0. 先删除被标记删除的章节目录
+      if (deletedItems.value.length > 0) {
+        for (const d of deletedItems.value) {
+          const chapterPath = `${bookPath}/${d.key}`
+          await window.electronAPI.removeBook(chapterPath)
+        }
+      }
+
       // 2a. 先重命名有变化的章节目录
       for (const item of finalItems) {
         if (item.name !== item.key) {
@@ -418,6 +542,12 @@ async function handleSave(): Promise<void> {
       if (target.value.type !== 'folder') {
         showToast('压缩包暂不支持重命名页文件，请先解压为文件夹再编辑', 'error')
         return
+      }
+      // 0. 先删除被标记删除的页面文件
+      if (deletedItems.value.length > 0) {
+        const pageKeys = deletedItems.value.map((d) => d.key)
+        const ok = await window.electronAPI.deletePages(bookPath, pageKeys)
+        if (!ok) { showToast('删除页面失败', 'error'); return }
       }
       // 2. 重排页面（重命名为 001, 002...）
       const filenames = finalItems.map((i) => i.src || i.key)
@@ -709,7 +839,12 @@ function goBack(): void {
   overflow: hidden;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6), 0 0 0 2px @accent-light;
   transform: rotate(2deg) scale(1.06);
-  transition: box-shadow 0.1s;
+  transition: opacity 0.15s ease, box-shadow 0.1s;
+
+  &.over-trash {
+    opacity: 0.35;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6), 0 0 0 2px #ef4444;
+  }
 
   img {
     width: 100%;
@@ -728,6 +863,140 @@ function goBack(): void {
   .flex-center();
   color: @text-muted;
 }
+
+// ── 顶栏垃圾桶图标 ──
+.header-trash {
+  .flex-center();
+  width: 36px;
+  height: 36px;
+  border-radius: @radius-sm;
+  border: 2px dashed @border;
+  color: @text-muted;
+  cursor: default;
+  transition: all 0.2s ease;
+
+  &.hover {
+    border-color: #ef4444;
+    background: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+    transform: scale(1.15);
+
+    svg { stroke: #ef4444; }
+  }
+}
+
+// trash-fade 过渡动画
+.trash-fade-enter-active { transition: all 0.2s ease; }
+.trash-fade-leave-active { transition: all 0.15s ease; }
+.trash-fade-enter-from, .trash-fade-leave-to {
+  opacity: 0;
+  transform: scale(0.7);
+}
+
+// ── 已删除项提示 ──
+.deleted-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: @radius-sm;
+  color: #f87171;
+  font-size: 12px;
+}
+
+// ── 删除确认弹窗 ──
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  z-index: 1000;
+  .flex-center();
+}
+
+.modal-card {
+  background: @bg-card;
+  border: 1px solid @border;
+  border-radius: @radius;
+  padding: 28px;
+  width: 360px;
+  max-width: 90vw;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  .flex-col();
+  gap: 16px;
+}
+
+.modal-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: @text-primary;
+}
+
+.modal-desc {
+  font-size: 13px;
+  color: @text-muted;
+  margin-top: -8px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.btn-danger {
+  background: #ef4444;
+  color: #fff;
+  border: none;
+  padding: 8px 18px;
+  border-radius: @radius-sm;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background @transition;
+
+  &:hover { background: #dc2626; }
+}
+
+.delete-preview {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: @bg-secondary;
+  border-radius: @radius-sm;
+  border: 1px solid @border;
+}
+
+.delete-preview-cover {
+  width: 48px;
+  aspect-ratio: 2 / 3;
+  border-radius: 4px;
+  overflow: hidden;
+  background: @bg-card;
+  flex-shrink: 0;
+
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+}
+
+.delete-preview-name {
+  font-size: 13px;
+  color: @text-primary;
+  .text-truncate();
+}
+
+// fade 动画
+.fade-enter-active { transition: all 0.2s ease; }
+.fade-leave-active { transition: all 0.15s ease; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
 
 // ── Toast ──
 .toast {
