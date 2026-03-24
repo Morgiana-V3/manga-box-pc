@@ -544,6 +544,61 @@ function attachCDP() {
     cacheDisabled: true
   }).catch(() => {
   });
+  dbg.sendCommand("Page.addScriptToEvaluateOnNewDocument", {
+    source: `
+      // 1. 删除 navigator.webdriver（Electron/自动化工具标志）
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+      // 2. 伪造 navigator.plugins（真实 Chrome 至少有 PDF 插件）
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => {
+          const p = [
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '', length: 1 },
+            { name: 'Native Client', filename: 'internal-nacl-plugin', description: '', length: 0 }
+          ];
+          p.refresh = () => {};
+          Object.setPrototypeOf(p, PluginArray.prototype);
+          return p;
+        }
+      });
+
+      // 3. 确保 navigator.languages 正常
+      Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
+
+      // 4. 完整的 window.chrome 对象（Cloudflare 重点检测项）
+      if (!window.chrome) window.chrome = {};
+      if (!window.chrome.runtime) {
+        window.chrome.runtime = {
+          connect: function(){}, sendMessage: function(){},
+          onMessage: { addListener: function(){}, removeListener: function(){} }
+        };
+      }
+      if (!window.chrome.app) {
+        window.chrome.app = { isInstalled: false,
+          InstallState: { DISABLED:'disabled', INSTALLED:'installed', NOT_INSTALLED:'not_installed' },
+          RunningState: { CANNOT_RUN:'cannot_run', READY_TO_RUN:'ready_to_run', RUNNING:'running' }
+        };
+      }
+      if (!window.chrome.csi) window.chrome.csi = function(){ return {}; };
+      if (!window.chrome.loadTimes) window.chrome.loadTimes = function(){ return {}; };
+
+      // 5. 修复 Permissions API（Electron 中异常）
+      try {
+        const origQuery = window.navigator.permissions.query.bind(window.navigator.permissions);
+        window.navigator.permissions.query = (p) =>
+          p.name === 'notifications' ? Promise.resolve({ state: Notification.permission }) : origQuery(p);
+      } catch(e) {}
+
+      // 6. 伪造 connection.rtt
+      try {
+        if (navigator.connection) {
+          Object.defineProperty(navigator.connection, 'rtt', { get: () => 100 });
+        }
+      } catch(e) {}
+    `
+  }).catch(() => {
+  });
   dbg.on("message", (_event, method, params) => {
     if (method === "Network.requestWillBeSent") {
       pendingRequests++;
@@ -1185,6 +1240,33 @@ electron.ipcMain.handle("sniff:start", async (_event, url) => {
     sniffSession = electron.session.fromPartition("persist:sniffer");
     sniffSession.setCertificateVerifyProc((_request, callback) => {
       callback(0);
+    });
+    const chromiumVer = process.versions.chrome || "120.0.0.0";
+    const chromiumMajor = chromiumVer.split(".")[0] || "120";
+    const chromeUA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromiumVer} Safari/537.36`;
+    const secChUa = `"Not_A Brand";v="8", "Chromium";v="${chromiumMajor}", "Google Chrome";v="${chromiumMajor}"`;
+    sniffSession.setUserAgent(chromeUA);
+    sniffSession.webRequest.onBeforeSendHeaders((details, callback) => {
+      const headers = { ...details.requestHeaders };
+      headers["User-Agent"] = chromeUA;
+      headers["sec-ch-ua"] = secChUa;
+      headers["sec-ch-ua-mobile"] = "?0";
+      headers["sec-ch-ua-platform"] = '"Windows"';
+      headers["sec-ch-ua-full-version-list"] = secChUa;
+      if (!headers["Accept-Language"]) {
+        headers["Accept-Language"] = "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6";
+      }
+      if (details.resourceType === "mainFrame") {
+        headers["Upgrade-Insecure-Requests"] = "1";
+        if (!headers["Accept"] || headers["Accept"] === "*/*") {
+          headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8";
+        }
+        headers["sec-fetch-dest"] = "document";
+        headers["sec-fetch-mode"] = "navigate";
+        headers["sec-fetch-site"] = "none";
+        headers["sec-fetch-user"] = "?1";
+      }
+      callback({ requestHeaders: headers });
     });
     sniffWin = new electron.BrowserWindow({
       width: 1100,

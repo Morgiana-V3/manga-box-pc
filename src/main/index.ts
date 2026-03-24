@@ -746,6 +746,64 @@ function attachCDP(): void {
     cacheDisabled: true
   }).catch(() => {})
 
+  // ★ 注入反自动化检测脚本（在所有页面 JS 执行之前运行）
+  // Page.addScriptToEvaluateOnNewDocument 在页面初始化时、任何脚本执行前注入
+  // 这比 dom-ready 或 did-finish-load 早得多，Cloudflare 的 JS 检测看到的是修改后的值
+  dbg.sendCommand('Page.addScriptToEvaluateOnNewDocument', {
+    source: `
+      // 1. 删除 navigator.webdriver（Electron/自动化工具标志）
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+      // 2. 伪造 navigator.plugins（真实 Chrome 至少有 PDF 插件）
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => {
+          const p = [
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '', length: 1 },
+            { name: 'Native Client', filename: 'internal-nacl-plugin', description: '', length: 0 }
+          ];
+          p.refresh = () => {};
+          Object.setPrototypeOf(p, PluginArray.prototype);
+          return p;
+        }
+      });
+
+      // 3. 确保 navigator.languages 正常
+      Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
+
+      // 4. 完整的 window.chrome 对象（Cloudflare 重点检测项）
+      if (!window.chrome) window.chrome = {};
+      if (!window.chrome.runtime) {
+        window.chrome.runtime = {
+          connect: function(){}, sendMessage: function(){},
+          onMessage: { addListener: function(){}, removeListener: function(){} }
+        };
+      }
+      if (!window.chrome.app) {
+        window.chrome.app = { isInstalled: false,
+          InstallState: { DISABLED:'disabled', INSTALLED:'installed', NOT_INSTALLED:'not_installed' },
+          RunningState: { CANNOT_RUN:'cannot_run', READY_TO_RUN:'ready_to_run', RUNNING:'running' }
+        };
+      }
+      if (!window.chrome.csi) window.chrome.csi = function(){ return {}; };
+      if (!window.chrome.loadTimes) window.chrome.loadTimes = function(){ return {}; };
+
+      // 5. 修复 Permissions API（Electron 中异常）
+      try {
+        const origQuery = window.navigator.permissions.query.bind(window.navigator.permissions);
+        window.navigator.permissions.query = (p) =>
+          p.name === 'notifications' ? Promise.resolve({ state: Notification.permission }) : origQuery(p);
+      } catch(e) {}
+
+      // 6. 伪造 connection.rtt
+      try {
+        if (navigator.connection) {
+          Object.defineProperty(navigator.connection, 'rtt', { get: () => 100 });
+        }
+      } catch(e) {}
+    `
+  }).catch(() => {})
+
   // 监听 CDP 事件
   dbg.on('message', (_event, method, params) => {
     if (method === 'Network.requestWillBeSent') {
@@ -1456,6 +1514,46 @@ ipcMain.handle('sniff:start', async (_event, url: string): Promise<boolean> => {
     // ★ 忽略 SSL 证书错误（很多漫画站证书有问题或使用自签名证书）
     sniffSession.setCertificateVerifyProc((_request, callback) => {
       callback(0) // 0 = 信任所有证书
+    })
+
+    // ★ 计算与当前 Electron 内置 Chromium 匹配的真实 Chrome UA
+    // process.versions.chrome 返回实际 Chromium 版本号（如 "120.0.6099.291"）
+    const chromiumVer = process.versions.chrome || '120.0.0.0'
+    const chromiumMajor = chromiumVer.split('.')[0] || '120'
+    const chromeUA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromiumVer} Safari/537.36`
+    const secChUa = `"Not_A Brand";v="8", "Chromium";v="${chromiumMajor}", "Google Chrome";v="${chromiumMajor}"`
+
+    // ★ 设置 session 级 User-Agent（影响所有从该 session 发出的请求）
+    sniffSession.setUserAgent(chromeUA)
+
+    // ★ 通过 webRequest 拦截并修正所有请求头（模拟真实 Chrome）
+    // 这在 Chromium 网络栈层面执行，比 JS 注入更早，也更可靠
+    sniffSession.webRequest.onBeforeSendHeaders((details, callback) => {
+      const headers = { ...details.requestHeaders }
+      // 强制覆盖 User-Agent（去掉 Electron 标识）
+      headers['User-Agent'] = chromeUA
+      // 注入/覆盖 sec-ch-ua Client Hints（Cloudflare 重点检查项）
+      headers['sec-ch-ua'] = secChUa
+      headers['sec-ch-ua-mobile'] = '?0'
+      headers['sec-ch-ua-platform'] = '"Windows"'
+      headers['sec-ch-ua-full-version-list'] = secChUa
+      // 补全 Accept-Language（很多 WAF 检查此头是否存在且格式正确）
+      if (!headers['Accept-Language']) {
+        headers['Accept-Language'] = 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6'
+      }
+      // 主文档请求需要 Upgrade-Insecure-Requests
+      if (details.resourceType === 'mainFrame') {
+        headers['Upgrade-Insecure-Requests'] = '1'
+        if (!headers['Accept'] || headers['Accept'] === '*/*') {
+          headers['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
+        }
+        // 主文档的 sec-fetch 头
+        headers['sec-fetch-dest'] = 'document'
+        headers['sec-fetch-mode'] = 'navigate'
+        headers['sec-fetch-site'] = 'none'
+        headers['sec-fetch-user'] = '?1'
+      }
+      callback({ requestHeaders: headers })
     })
 
     // 创建可见的嗅探窗口（预览模式：用户可以实时看到页面加载过程）
